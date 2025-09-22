@@ -3,7 +3,9 @@
 PowerShell tool that lets you export and import bookmarks for Google Chrome, Microsoft Edge, and Mozilla Firefox. It supports GUI for interactive use and CLI for automation, offers scheduled backups, multi-profile handling, file integrity checks, and comprehensive logging. It’s designed to be robust in enterprise environments (network paths, permissions, and process safety) while staying simple for individual users.
 
 ------------------------------------------------------------------------
+<img width="579" height="410" alt="bookmark" src="https://github.com/user-attachments/assets/f9c5ad00-9372-4d14-9c68-5846da5c95fe" />
 
+------------------------------------------------------------------------
 ## Table of Contents
 
 -   [Overview](#overview)
