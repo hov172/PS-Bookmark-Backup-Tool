@@ -1,4 +1,4 @@
-# Bookmark Backup Tool v5.0 -- Enhanced Edition
+# Bookmark Backup Tool v5.0 -- Powershell Enhanced Edition
 
 PowerShell tool that lets you export and import bookmarks for Google Chrome, Microsoft Edge, and Mozilla Firefox. It supports GUI for interactive use and CLI for automation, offers scheduled backups, multi-profile handling, file integrity checks, and comprehensive logging. It’s designed to be robust in enterprise environments (network paths, permissions, and process safety) while staying simple for individual users.
 
