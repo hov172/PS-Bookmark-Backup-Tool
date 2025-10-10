@@ -4,7 +4,8 @@ PowerShell tool that lets you export and import bookmarks for Google Chrome, Mic
 
 ** Coming Soon – I’m building both Windows and macOS applications based on this script. These apps will allow users to manage their own backups. Both versions will also include command-line options for administrators. 
 
-MacOS: https://github.com/hov172/MacOS-Bookmarks-Backup-Tool
+- MacOS: https://github.com/hov172/MacOS-Bookmarks-Backup-Tool
+- Windows: https://github.com/hov172/Win-Bookmarks-Backup-Tool/tree/main
 ------------------------------------------------------------------------
 <img width="579" height="410" alt="bookmark" src="https://github.com/user-attachments/assets/f9c5ad00-9372-4d14-9c68-5846da5c95fe" />
 
