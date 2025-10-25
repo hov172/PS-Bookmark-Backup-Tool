@@ -1,215 +1,253 @@
-# Bookmark Backup Tool v5.0 -- Powershell Enhanced Edition
+# 📑 Bookmark Backup Tool v5.0 — PowerShell Enhanced Edition
 
-PowerShell tool that lets you export and import bookmarks for Google Chrome, Microsoft Edge, and Mozilla Firefox. It supports GUI for interactive use and CLI for automation, offers scheduled backups, multi-profile handling, file integrity checks, and comprehensive logging. It’s designed to be robust in enterprise environments (network paths, permissions, and process safety) while staying simple for individual users.
+PowerShell tool that lets you **export and import bookmarks** for **Google Chrome**, **Microsoft Edge**, and **Mozilla Firefox**.  
+It supports GUI for interactive use and CLI for automation, offers scheduled backups, multi-profile handling, file integrity checks, and comprehensive logging.  
+It’s designed to be **robust in enterprise environments** (network paths, permissions, and process safety) while staying simple for individual users.
 
-** I built both Windows and MacOS applications based on this script. These apps will allow users to manage their own backups. Both versions will also include command-line options for administrators. 
+**I built both Windows and macOS applications based on this script. These apps allow users to manage their own backups, and both versions include command-line options for administrators.**
 
-- MacOS: https://github.com/hov172/MacOS-Bookmarks-Backup-Tool
-- Windows: https://github.com/hov172/Win-Bookmarks-Backup-Tool/tree/main
-------------------------------------------------------------------------
+- 💻 **MacOS**: [https://github.com/hov172/MacOS-Bookmarks-Backup-Tool](https://github.com/hov172/MacOS-Bookmarks-Backup-Tool)  
+- 🖥️ **Windows**: [https://github.com/hov172/Win-Bookmarks-Backup-Tool/tree/main](https://github.com/hov172/Win-Bookmarks-Backup-Tool/tree/main)
+
+---
+
 <img width="579" height="410" alt="bookmark" src="https://github.com/user-attachments/assets/f9c5ad00-9372-4d14-9c68-5846da5c95fe" />
 
-------------------------------------------------------------------------
-## Table of Contents
+---
 
--   [Overview](#overview)
--   [Key Features](#key-features)
--   [Requirements](#requirements)
--   [Supported Browsers & Files](#supported-browsers--files)
--   [Quick Start](#quick-start)
--   [Usage](#usage)
-    -   [GUI Mode (Beginner-friendly)](#gui-mode-beginner-friendly)
-    -   [CLI / Silent Mode](#cli--silent-mode)
-    -   [Parameters](#parameters)
-    -   [Command-Line Examples](#command-line-examples)
--   [Scheduling (Automatic Backups)](#scheduling-automatic-backups)
--   [Configuration](#configuration)
--   [How It Works](#how-it-works)
-    -   [Profile Discovery](#profile-discovery)
-    -   [Network Path Detection &
-        Fallback](#network-path-detection--fallback)
-    -   [Safety & Integrity Checks](#safety--integrity-checks)
-    -   [Logging](#logging)
--   [File Locations](#file-locations)
--   [Troubleshooting](#troubleshooting)
--   [FAQ](#faq)
--   [Security Notes](#security-notes)
--   [Known Limitations](#known-limitations)
--   [Uninstall / Cleanup](#uninstall--cleanup)
--   [Changelog](#changelog)
--   [License](#license)
--   [Credits](#credits)
+## 📝 Changelog
+**v5.0 — October 25, 2025**
 
-------------------------------------------------------------------------
+- Made into a Powershell Module
+- Publish installation-powershell-gallery
 
-## Overview
 
-**Bookmark Backup Tool v5.0** is a PowerShell tool that lets you export
-and import bookmarks for **Google Chrome**, **Microsoft Edge**, and
-**Mozilla Firefox**. It supports **GUI** for interactive use and **CLI**
-for automation, offers **scheduled backups**, **multi-profile
-handling**, **file integrity checks**, and **comprehensive logging**.
-It's designed to be robust in enterprise environments (network paths,
-permissions, and process safety) while staying simple for individual
-users.
+**v5.0 — September 22, 2025**
 
-------------------------------------------------------------------------
+- Enhanced GUI  
+- Network path detection with retry  
+- Process safety checks  
+- Auto backups before import  
+- File integrity validation  
+- Comprehensive logging  
+- Scheduling improvements
+---
 
-## Key Features
+## 📚 Table of Contents
 
--   Multi-browser support (Chrome, Edge, Firefox)
--   Two interfaces: GUI (Windows Forms) and CLI (silent mode)
--   Automatic path detection with network share preference and Desktop
-    fallback
--   Multi-profile support (latest or all profiles)
--   Automatic backup before imports
--   File integrity verification for JSON and SQLite files
--   Scheduling via Windows Task Scheduler (Daily/Weekly/Monthly)
--   Configuration file support with sensible defaults
--   Verbose logging with retention policy
--   Safety mechanisms: browser process detection, retry logic,
-    WhatIf/Force switches
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Requirements](#requirements)
+- [Supported Browsers & Files](#supported-browsers--files)
+- [Installation (PowerShell Gallery)](#installation-powershell-gallery)
+- [Available Commands](#available-commands)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+  - [GUI Mode (Beginner-friendly)](#gui-mode-beginner-friendly)
+  - [CLI / Silent Mode](#cli--silent-mode)
+  - [Parameters](#parameters)
+  - [Command-Line Examples](#command-line-examples)
+- [Scheduling (Automatic Backups)](#scheduling-automatic-backups)
+- [Configuration](#configuration)
+- [How It Works](#how-it-works)
+- [File Locations](#file-locations)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
+- [Security Notes](#security-notes)
+- [Known Limitations](#known-limitations)
+- [Uninstall / Cleanup](#uninstall--cleanup)
+- [Changelog](#changelog)
+- [License](#license)
+- [Credits](#credits)
 
-------------------------------------------------------------------------
+---
 
-## Requirements
+## 🧭 Overview
 
--   Windows 10 or 11
--   PowerShell 5.1+
--   .NET Assemblies: `System.Windows.Forms`, `System.Drawing`
--   File system access to profiles/target paths
--   Admin rights for scheduled tasks (sometimes required)
+**Bookmark Backup Tool v5.0** is a PowerShell module that lets you export and import bookmarks for **Google Chrome**, **Microsoft Edge**, and **Mozilla Firefox**.  
+It supports **GUI** for interactive use and **CLI** for automation, offers **scheduled backups**, **multi-profile handling**, **file integrity checks**, and **comprehensive logging**.  
+It's built to work smoothly in both **enterprise** and **home** environments.
 
-------------------------------------------------------------------------
+---
 
-## Supported Browsers & Files
+## ✨ Key Features
 
-  --------------------------------------------------------------------------------------------------------------------
-  Browser     Exported/Imported File              Native Location
-  ----------- ----------------------------------- --------------------------------------------------------------------
-  Chrome      `Chrome-Bookmarks.json`             `%LOCALAPPDATA%\\Google\\Chrome\\User Data\\<Profile>\\Bookmarks`
+- Multi-browser support (Chrome, Edge, Firefox)
+- GUI (Windows Forms) and CLI (silent mode)
+- Automatic path detection with network share preference and Desktop fallback
+- Multi-profile support
+- Automatic backup before imports
+- File integrity verification for JSON and SQLite files
+- Task Scheduler integration (Daily/Weekly/Monthly)
+- Configuration file support
+- Verbose logging with retention policy
+- Safety mechanisms: browser process detection, retry logic, WhatIf/Force switches
+- PowerShell Module
 
-  Edge        `Edge-Bookmarks.json`               `%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\<Profile>\\Bookmarks`
+---
 
-  Firefox     `Firefox-places.sqlite`             `%APPDATA%\\Mozilla\\Firefox\\Profiles\\<Profile>\\places.sqlite`
-  --------------------------------------------------------------------------------------------------------------------
+## 🧰 Requirements
 
-------------------------------------------------------------------------
+- Windows 10 or 11  
+- PowerShell 5.1+  
+- .NET Assemblies: `System.Windows.Forms`, `System.Drawing`  
+- File system access to profiles/target paths  
+- Admin rights for scheduled tasks (sometimes required)
 
-## Quick Start
+---
 
-``` powershell
-# Launch GUI
-.\BookMarkToolv5.ps1
+## 🌐 Supported Browsers & Files
+
+| Browser  | Exported/Imported File         | Native Location                                                                 |
+|----------|-------------------------------|----------------------------------------------------------------------------------|
+| Chrome   | `Chrome-Bookmarks.json`       | `%LOCALAPPDATA%\Google\Chrome\User Data\<Profile>\Bookmarks`                    |
+| Edge     | `Edge-Bookmarks.json`         | `%LOCALAPPDATA%\Microsoft\Edge\User Data\<Profile>\Bookmarks`                   |
+| Firefox  | `Firefox-places.sqlite`       | `%APPDATA%\Mozilla\Firefox\Profiles\<Profile>\places.sqlite`                    |
+
+---
+
+## 📦 Installation (PowerShell Gallery)
+
+👉 [PowerShell Gallery Package](https://www.powershellgallery.com/packages/BookmarkBackupTool/5.0.0)
+
+```powershell
+# Install for current user
+Install-Module -Name BookmarkBackupTool -Scope CurrentUser -Force
+
+# Or install system-wide (Admin required)
+Install-Module -Name BookmarkBackupTool -Scope AllUsers -Force
 ```
 
-------------------------------------------------------------------------
+> 💡 First-time users may need to trust PSGallery:
+> ```powershell
+> Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted
+> ```
 
-## Usage
+**Update the module:**
+```powershell
+Update-Module -Name BookmarkBackupTool
+```
+
+**Uninstall the module:**
+```powershell
+Uninstall-Module -Name BookmarkBackupTool
+```
+
+---
+
+## 🧭 Available Commands
+
+| Command                         | Description                                                           |
+|----------------------------------|-----------------------------------------------------------------------|
+| `Export-Bookmarks`              | Exports bookmarks from supported browsers to a backup file.           |
+| `Import-Bookmarks`              | Imports bookmarks from a backup file.                                 |
+| `Get-HomeSharePath`            | Returns the user’s home or shared folder path.                        |
+| `Test-BrowserInstalled`        | Checks if a supported browser is installed.                           |
+| `Test-BrowserRunning`          | Checks if a browser is currently running.                             |
+| `Get-BrowserProfiles`          | Lists available profiles.                                            |
+| `Backup-ExistingBookmarks`     | Creates a snapshot of the current bookmarks.                           |
+| `Show-BookmarkGUI`             | Launches the graphical interface.                                     |
+| `New-BookmarkScheduledTask`    | Creates a scheduled task for automated backups.                       |
+| `Remove-BookmarkScheduledTask` | Removes a scheduled backup task.                                      |
+| `Get-BookmarkConfiguration`    | Displays current configuration.                                       |
+| `Set-BookmarkConfiguration`    | Updates configuration.                                               |
+| `Test-BookmarkPrerequisites`   | Checks environment readiness.                                        |
+
+To list all commands:
+
+```powershell
+Get-Command -Module BookmarkBackupTool
+```
+
+---
+
+## ⚡ Quick Start
+
+```powershell
+# Launch GUI
+Show-BookmarkGUI
+```
+
+Or export bookmarks directly:
+
+```powershell
+Export-Bookmarks -Browser Chrome -Path "$env:USERPROFILE\Documents\chrome-bookmarks.json"
+```
+
+---
+
+## 🖱️ Usage
 
 ### GUI Mode (Beginner-friendly)
 
-Run without parameters:
-
-``` powershell
-.\BookMarkToolv5.ps1
+```powershell
+Show-BookmarkGUI
 ```
 
 ### CLI / Silent Mode
 
 Requires `-Silent` and `-Action Export|Import` with browser flags.
 
-### Parameters
+---
 
-  Parameter                Description
-  ------------------------ ----------------------------
-  `-Silent`                Run without GUI
-  `-Action`                `Export` or `Import`
-  `-Chrome`                Include Chrome
-  `-Edge`                  Include Edge
-  `-Firefox`               Include Firefox
-  `-TargetPath`            Override detected path
-  `-WhatIf`                Preview only
-  `-Force`                 Force without confirmation
-  `-AllProfiles`           Process all profiles
-  `-CreateScheduledTask`   Create auto-backup task
-  `-ScheduleFrequency`     Daily/Weekly/Monthly
-  `-ConfigPath`            Use custom config file
+### 🧾 Parameters
 
-### Command-Line Examples
+| Parameter               | Description                                  |
+|-------------------------|-----------------------------------------------|
+| `-Silent`               | Run without GUI                              |
+| `-Action`               | `Export` or `Import`                          |
+| `-Chrome` / `-Edge` / `-Firefox` | Select browsers                      |
+| `-TargetPath`           | Override detected path                        |
+| `-WhatIf`               | Preview only                                 |
+| `-Force`                | Force without confirmation                    |
+| `-AllProfiles`          | Process all profiles                          |
+| `-CreateScheduledTask`  | Create auto-backup task                        |
+| `-ScheduleFrequency`    | Daily/Weekly/Monthly                          |
+| `-ConfigPath`           | Use custom config file                         |
+
+---
+
+### 🧰 Command-Line Examples
 
 #### Export
-
-``` powershell
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -Edge -Firefox
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -TargetPath "D:\Backups"
-.\BookMarkToolv5.ps1 -Silent -Action Export -Edge -Firefox -Verbose
+```powershell
+Export-Bookmarks -Browser Chrome -Path "D:\Backups\Chrome.json"
 ```
 
 #### Import
-
-``` powershell
-.\BookMarkToolv5.ps1 -Silent -Action Import -Chrome -Edge -Firefox
-.\BookMarkToolv5.ps1 -Silent -Action Import -Chrome -TargetPath "D:\Backups"
-.\BookMarkToolv5.ps1 -Silent -Action Import -Firefox -AllProfiles
+```powershell
+Import-Bookmarks -Browser Edge -Path "D:\Backups\Edge.json"
 ```
 
-#### WhatIf / Force
-
-``` powershell
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -WhatIf
-.\BookMarkToolv5.ps1 -Silent -Action Import -Edge -Force
+#### Schedule
+```powershell
+New-BookmarkScheduledTask -Browser Firefox -Path "D:\Backups\firefox.json" -ScheduleFrequency Daily
 ```
 
-#### Scheduling
-
-``` powershell
-.\BookMarkToolv5.ps1 -CreateScheduledTask -ScheduleFrequency Daily
-.\BookMarkToolv5.ps1 -CreateScheduledTask -ScheduleFrequency Weekly
-.\BookMarkToolv5.ps1 -CreateScheduledTask -ScheduleFrequency Monthly
-Unregister-ScheduledTask -TaskName "BookmarkBackupTool_AutoExport" -Confirm:$false
+#### Check environment
+```powershell
+Test-BookmarkPrerequisites
 ```
 
-#### Configs
+---
 
-``` powershell
-.\BookMarkToolv5.ps1 -ConfigPath "C:\MyConfigs\bookmarktool.json"
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -AllProfiles -ConfigPath "C:\MyConfigs\bookmarktool.json"
+## 🕑 Scheduling (Automatic Backups)
+
+- Daily, Weekly, Monthly options (default 6:00 PM)  
+- Creates a Task Scheduler job named `BookmarkBackupTool_AutoExport`.
+
+---
+
+## ⚙️ Configuration
+
+Default config path:
+```
+%USERPROFILE%\BookmarkTool.config.json
 ```
 
-#### Workflows
+Example:
 
-``` powershell
-# Home/Work sync
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -Edge
-.\BookMarkToolv5.ps1 -Silent -Action Import -Chrome -Edge
-
-# System migration
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -TargetPath "D:\Backup"
-.\BookMarkToolv5.ps1 -Silent -Action Import -Edge -TargetPath "D:\Backup"
-
-# Full backup
-.\BookMarkToolv5.ps1 -Silent -Action Export -Chrome -Edge -Firefox -AllProfiles
-```
-
-------------------------------------------------------------------------
-
-## Scheduling (Automatic Backups)
-
--   Daily, Weekly, Monthly options at 6:00 PM by default.\
--   Creates a Task Scheduler job named `BookmarkBackupTool_AutoExport`.
-
-------------------------------------------------------------------------
-
-## Configuration
-
-Default config is stored at:
-
-    %USERPROFILE%\\BookmarkTool.config.json
-
-Example fields:
-
-``` json
+```json
 {
   "PreferNetworkPath": true,
   "DefaultBrowsers": ["Chrome","Edge"],
@@ -218,109 +256,87 @@ Example fields:
 }
 ```
 
-------------------------------------------------------------------------
+---
 
-## How It Works
+## 🧠 How It Works
 
-### Profile Discovery
+- Detects browser profiles (Chrome/Edge/Firefox)  
+- Uses network paths if available, otherwise Desktop fallback  
+- Integrity checks and safe backups before overwrite  
+- Detailed logging with retention policy
 
--   Chrome/Edge: detects `Default` and `Profile X` folders.
--   Firefox: parses `profiles.ini` and validates `places.sqlite`.
+---
 
-### Network Path Detection & Fallback
+## 📂 File Locations
 
--   Uses `%HOMESHARE%` if valid, otherwise falls back to Desktop.
+- Exports: `Chrome-Bookmarks.json`, `Edge-Bookmarks.json`, `Firefox-places.sqlite`  
+- Logs: `%USERPROFILE%\BookmarkTool.log`  
+- Config: `%USERPROFILE%\BookmarkTool.config.json`  
+- Auto backups: `<Profile>\BookmarkTool_Backups`
 
-### Safety & Integrity Checks
+---
 
--   Detects if browsers are running before import.
--   Auto backups created in `BookmarkTool_Backups`.
--   JSON validated for structure; SQLite validated for signature.
+## 🧭 Troubleshooting
 
-### Logging
+- **Browser is running** → Close browsers or run:
+  ```powershell
+  Get-Process chrome,msedge,firefox | Stop-Process
+  ```
+- **Network path error** → Fallback to Desktop or specify `-TargetPath`  
+- **Permission denied** → Run PowerShell as Administrator  
+- **Execution policy**:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\BookMarkToolv5.ps1
+  ```
 
--   Writes `BookmarkTool.log` in target path or user profile.
--   Retains logs for 30 days (default).
+---
 
-------------------------------------------------------------------------
+## ❓ FAQ
 
-## File Locations
+- Does this merge bookmarks? → ❌ No, it replaces files.  
+- Can I compress backups? → ✅ Yes, use `Compress-Archive` after export.  
+- Can I automate multiple users? → ✅ Yes, loop through `C:\Users`.
 
--   Exports: `Chrome-Bookmarks.json`, `Edge-Bookmarks.json`,
-    `Firefox-places.sqlite`
--   Logs: `%USERPROFILE%\\BookmarkTool.log` or TargetPath
--   Config: `%USERPROFILE%\\BookmarkTool.config.json`
--   Auto backups: `<Profile>\\BookmarkTool_Backups`
+---
 
-------------------------------------------------------------------------
+## 🔐 Security Notes
 
-## Troubleshooting
+- Exported bookmarks may contain sensitive data.  
+- Use secure storage and protect network shares.
 
--   **Browser is running** → Close browsers or run:\
-    `Get-Process chrome,msedge,firefox | Stop-Process`
--   **Network path error** → Falls back to Desktop or specify
-    `-TargetPath`
--   **Permission denied** → Run PowerShell as Admin
--   **Execution policy** → Run:\
-    `powershell -ExecutionPolicy Bypass -File .\BookMarkToolv5.ps1`
+---
 
-------------------------------------------------------------------------
+## ⚠️ Known Limitations
 
-## FAQ
+- No merge capability.  
+- Monthly schedule = 4-week interval.  
+- Enterprise profile redirection may affect detection.
 
--   **Does this merge bookmarks?** → No, it replaces files.\
--   **Can I compress backups?** → Use `Compress-Archive` after export.\
--   **Can I import/export multiple users?** → Yes, wrap in a loop across
-    `C:\Users`.
+---
 
-------------------------------------------------------------------------
+## 🧹 Uninstall / Cleanup
 
-## Security Notes
-
--   Exported bookmarks may contain sensitive info. Secure storage is
-    recommended.
-
-------------------------------------------------------------------------
-
-## Known Limitations
-
--   No merge capability.\
--   Monthly schedule = 4-week interval.\
--   Enterprise profile redirections may affect detection.
-
-------------------------------------------------------------------------
-
-## Uninstall / Cleanup
-
-``` powershell
+```powershell
 Unregister-ScheduledTask -TaskName "BookmarkBackupTool_AutoExport" -Confirm:$false
-Remove-Item "$env:USERPROFILE\BookmarkTool.config.json"
-Remove-Item "$env:USERPROFILE\BookmarkTool.log"
+Remove-Item "$env:USERPROFILE\BookmarkTool.config.json" -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\BookmarkTool.log" -ErrorAction SilentlyContinue
 ```
 
-------------------------------------------------------------------------
+To remove the module:
+```powershell
+Uninstall-Module -Name BookmarkBackupTool
+```
 
-## Changelog
+---
 
-**v5.0 -- September 22, 2025**\
-- Enhanced GUI\
-- Network path detection w/ retry\
-- Process safety checks\
-- Auto backups before import\
-- File integrity validation\
-- Comprehensive logging\
-- Scheduling improvements
+## 📜 License
 
-------------------------------------------------------------------------
+[MIT License](https://opensource.org/license/mit/)
 
-## License
+---
 
-MIT License
+## 🙌 Credits
 
-------------------------------------------------------------------------
+**Author:** Jesus M. Ayala
 
-## Credits
-
-Author: **Jesus M. Ayala**
-
-------------------------------------------------------------------------
+---
