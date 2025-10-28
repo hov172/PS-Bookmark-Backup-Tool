@@ -2,7 +2,7 @@
 
 PowerShell tool that lets you **export and import bookmarks** for **Google Chrome**, **Microsoft Edge**, and **Mozilla Firefox**.  
 It supports GUI for interactive use and CLI for automation, offers scheduled backups, multi-profile handling, file integrity checks, and comprehensive logging.  
-It’s designed to be **robust in enterprise environments** (network paths, permissions, and process safety) while staying simple for individual users.
+It's designed to be **robust in enterprise environments** (network paths, permissions, and process safety) while staying simple for individual users.
 
 **I built both Windows and macOS applications based on this script. These apps allow users to manage their own backups, and both versions include command-line options for administrators.**
 
@@ -35,30 +35,29 @@ It’s designed to be **robust in enterprise environments** (network paths, perm
 
 ## 📚 Table of Contents
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Requirements](#requirements)
-- [Supported Browsers & Files](#supported-browsers--files)
-- [Installation (PowerShell Gallery)](#installation-powershell-gallery)
-- [Available Commands](#available-commands)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
+- [🧭 Overview](#-overview)
+- [✨ Key Features](#-key-features)
+- [🧰 Requirements](#-requirements)
+- [🌐 Supported Browsers & Files](#-supported-browsers--files)
+- [📦 Installation (PowerShell Gallery)](#-installation-powershell-gallery)
+- [🧭 Available Commands](#-available-commands)
+- [⚡ Quick Start](#-quick-start)
+- [🖱️ Usage](#️-usage)
   - [GUI Mode (Beginner-friendly)](#gui-mode-beginner-friendly)
   - [CLI / Silent Mode](#cli--silent-mode)
-  - [Parameters](#parameters)
-  - [Command-Line Examples](#command-line-examples)
-- [Scheduling (Automatic Backups)](#scheduling-automatic-backups)
-- [Configuration](#configuration)
-- [How It Works](#how-it-works)
-- [File Locations](#file-locations)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
-- [Security Notes](#security-notes)
-- [Known Limitations](#known-limitations)
-- [Uninstall / Cleanup](#uninstall--cleanup)
-- [Changelog](#changelog)
-- [License](#license)
-- [Credits](#credits)
+  - [🧾 Parameters](#-parameters)
+  - [🧰 Command-Line Examples](#-command-line-examples)
+- [🕑 Scheduling (Automatic Backups)](#-scheduling-automatic-backups)
+- [⚙️ Configuration](#️-configuration)
+- [🧠 How It Works](#-how-it-works)
+- [📂 File Locations](#-file-locations)
+- [🧭 Troubleshooting](#-troubleshooting)
+- [❓ FAQ](#-faq)
+- [🔐 Security Notes](#-security-notes)
+- [⚠️ Known Limitations](#️-known-limitations)
+- [🧹 Uninstall / Cleanup](#-uninstall--cleanup)
+- [📜 License](#-license)
+- [🙌 Credits](#-credits)
 
 ---
 
@@ -141,7 +140,7 @@ Uninstall-Module -Name BookmarkBackupTool
 |----------------------------------|-----------------------------------------------------------------------|
 | `Export-Bookmarks`              | Exports bookmarks from supported browsers to a backup file.           |
 | `Import-Bookmarks`              | Imports bookmarks from a backup file.                                 |
-| `Get-HomeSharePath`            | Returns the user’s home or shared folder path.                        |
+| `Get-HomeSharePath`            | Returns the user's home or shared folder path.                        |
 | `Test-BrowserInstalled`        | Checks if a supported browser is installed.                           |
 | `Test-BrowserRunning`          | Checks if a browser is currently running.                             |
 | `Get-BrowserProfiles`          | Lists available profiles.                                            |
