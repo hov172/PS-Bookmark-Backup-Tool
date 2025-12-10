@@ -12,7 +12,8 @@ It's designed to be **robust in enterprise environments** (network paths, permis
 
 ---
 
-<img width="579" height="410" alt="bookmark" src="https://github.com/user-attachments/assets/f9c5ad00-9372-4d14-9c68-5846da5c95fe" />
+<img width="588" height="472" alt="BookmarkToolPS" src="https://github.com/user-attachments/assets/f339069d-eed6-4d73-968c-15096ec34b11" />
+
 
 ---
 
