@@ -1,8 +1,8 @@
-﻿# =====================================================================================
-# Bookmark Backup Tool v5.2 - Enhanced Edition (Full Feature Parity with C# App)
+# =====================================================================================
+# Bookmark Backup Tool v5.3 - Enhanced Edition (Full Feature Parity with C# App)
 # Author: Jesus M. Ayala
-# Version: 5.2
-# Last Modified: December 10th, 2025
+# Version: 5.3
+# Last Modified: July 25th, 2026
 # Requires: PowerShell 5.1+, Windows 10/11, .NET Framework (for System.Data.SQLite)
 # License: MIT
 # 
@@ -1077,10 +1077,24 @@ function New-BookmarkScheduledTask {
         $scriptArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Silent -Action Export -Chrome -Edge -Firefox"
         $action   = New-ScheduledTaskAction -Execute 'PowerShell.exe' -Argument $scriptArgs
         switch ($Frequency.ToLower()) {
-            'daily'   { $trigger = New-ScheduledTaskTrigger -Daily -At $Time }
-            'weekly'  { $trigger = New-ScheduledTaskTrigger -Weekly -At $Time -DaysOfWeek Sunday }
-            'monthly' { $trigger = New-ScheduledTaskTrigger -Monthly -DaysOfMonth 1 -At $Time }
-            default   { throw "Invalid frequency: $Frequency. Must be Daily, Weekly, or Monthly." }
+            'daily'  { $trigger = New-ScheduledTaskTrigger -Daily -At $Time }
+            'weekly' { $trigger = New-ScheduledTaskTrigger -Weekly -At $Time -DaysOfWeek Sunday }
+            'monthly' {
+                # New-ScheduledTaskTrigger has no -Monthly parameter. Build the supported
+                # Task Scheduler monthly trigger as a client-only CIM instance instead.
+                $start = [datetime]::Today.Add([timespan]::Parse($Time))
+                if ($start -le (Get-Date)) { $start = $start.AddMonths(1) }
+                $trigger = New-CimInstance -ClassName MSFT_TaskMonthlyTrigger `
+                    -Namespace Root/Microsoft/Windows/TaskScheduler `
+                    -ClientOnly `
+                    -Property @{
+                        Enabled       = $true
+                        StartBoundary = $start.ToString('s')
+                        DaysOfMonth   = [uint32]1
+                        MonthsOfYear  = [uint16]4095
+                    }
+            }
+            default { throw "Invalid frequency: $Frequency. Must be Daily, Weekly, or Monthly." }
         }
         $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
         $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
