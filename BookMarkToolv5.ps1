@@ -1,11 +1,27 @@
-# =====================================================================================
-# Bookmark Backup Tool v5.3 - Enhanced Edition (Full Feature Parity with C# App)
+﻿# =====================================================================================
+# Bookmark Backup Tool v5.4 - Enhanced Edition
 # Author: Jesus M. Ayala
-# Version: 5.3
-# Last Modified: July 25th, 2026
+# Version: 5.4  (also set in $script:ToolVersion below - keep both in sync)
+# Last Modified: September 26th, 2026
 # Requires: PowerShell 5.1+, Windows 10/11, .NET Framework (for System.Data.SQLite)
 # License: MIT
-# 
+# Encoding: this file must stay UTF-8 *with BOM* - Windows PowerShell 5.1 misreads it otherwise
+#
+# NEW IN v5.4 (reliability release):
+# - Firefox: backups include unsaved changes (places.sqlite-wal merged in), even while Firefox is open;
+#   every Firefox backup is a single standalone .sqlite file; works on network shares
+# - Firefox: uses the profile Firefox actually launches ([Install*] Default= in profiles.ini)
+# - Import: finds this tool's own exports (newest *_BookmarkData_<timestamp> file), validates the file
+#   before overwriting (bad/truncated/wrong-browser files are skipped), clears stale Firefox WAL/SHM files,
+#   and with -AllProfiles never gives one profile another profile's bookmarks
+# - HTML export: keeps folders, escapes special characters, dates in seconds, toolbar marked for re-import
+# - Silent mode without -TargetPath no longer hangs (log path / share probe recursion); share probe is fast
+#   and reliable on PowerShell 5.1; HOMESHARE unset -> Desktop immediately; Desktop follows OneDrive redirection
+# - Config DefaultPath and PreferNetworkPath are now honored
+# - Pre-import backup rotation keeps the newest 10 by name (file dates are copied from the source)
+# - A logged error no longer ends the run; ZIP holds only this run's files; summary printed once
+# - -AllProfiles file names use underscores for spaces (older names still import)
+#
 # NEW IN v5.2:
 # - 🔄 Browser Auto-Close: Graceful close with 3s wait, force kill if needed
 # - 📄 HTML Export/Conversion: Real Chrome JSON → HTML and Firefox SQLite → HTML
@@ -156,7 +172,7 @@ function Install-SQLiteIfMissing {
 }
 
 # =====================================================================================
-# Load System.Data.SQLite (for Firefox HTML conversion)
+# Load System.Data.SQLite (Firefox: WAL merge into backups, import validation, HTML conversion)
 # =====================================================================================
 $script:SQLiteAvailable = $false
 
@@ -197,14 +213,17 @@ if (-not $script:SQLiteAvailable) {
     Write-Verbose "System.Data.SQLite not found locally, attempting to download from NuGet..."
     $script:SQLiteAvailable = Install-SQLiteIfMissing
     if (-not $script:SQLiteAvailable) {
-        Write-Verbose "⚠ System.Data.SQLite not available - Firefox HTML conversion will be disabled"
+        Write-Verbose "⚠ System.Data.SQLite not available - Firefox HTML conversion, WAL merge and deep import validation will be disabled"
     }
 }
 
 # =====================================================================================
 # GLOBALS & CONFIG
 # =====================================================================================
+$script:ToolVersion = '5.4'
 $script:Config = $null
+$script:HomeSharePathCache = $null
+$script:ResolvingHomeShare = $false
 $script:OperationResults = @()
 $script:StartTime = Get-Date
 
@@ -249,6 +268,8 @@ $script:Config = Get-Configuration
 # LOGGING
 # =====================================================================================
 function Get-LogFilePath {
+    # $null while the home share is still being probed: those few lines go to the console only
+    if (-not $TargetPath -and $Silent -and $script:ResolvingHomeShare) { return $null }
     $path = if ($TargetPath) { $TargetPath } elseif ($Silent) { Get-HomeSharePath } else { $env:USERPROFILE }
     Join-Path $path "BookmarkTool.log"
 }
@@ -260,12 +281,14 @@ function Write-Log {
         [ValidateSet('INFO','WARN','ERROR','DEBUG')][string]$Level = 'INFO'
     )
     $logFile = Get-LogFilePath
-    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fffK')
-    $line = "$timestamp [$Level] $Message"
-    $dir = Split-Path $logFile -Parent
-    if (!(Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $line | Out-File -FilePath $logFile -Append -Encoding UTF8
-    switch ($Level) { 'INFO' { Write-Information $Message -InformationAction Continue } 'WARN' { Write-Warning $Message } 'ERROR' { Write-Error $Message } 'DEBUG' { Write-Verbose $Message } }
+    if ($logFile) {
+        $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fffK')
+        $line = "$timestamp [$Level] $Message"
+        $dir = Split-Path $logFile -Parent
+        if (!(Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $line | Out-File -FilePath $logFile -Append -Encoding UTF8
+    }
+    switch ($Level) { 'INFO' { Write-Information $Message -InformationAction Continue } 'WARN' { Write-Warning $Message } 'ERROR' { Write-Error $Message -ErrorAction Continue } 'DEBUG' { Write-Verbose $Message } }
 }
 
 function Invoke-LogRetention { try { $log = Get-LogFilePath; if (Test-Path $log) { $age = (Get-Date) - (Get-Item $log).CreationTime; if ($age.Days -gt $script:Config.LogRetentionDays) { Remove-Item $log -Force } } } catch { } }
@@ -317,26 +340,60 @@ function Invoke-WithRetry {
 function Select-FileDialog { param([string]$Filter = 'All files (*.*)|*.*'); $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = $Filter; $res = $ofd.ShowDialog(); if ($res -eq [System.Windows.Forms.DialogResult]::OK) { return $ofd.FileName } $null }
 
 function Get-HomeSharePath {
-    $desktopPath = [IO.Path]::Combine($env:USERPROFILE,'Desktop')
-    $networkPath = if ($env:HOMESHARE) { $env:HOMESHARE } else { "\\server\home\$env:USERNAME" }
+    # Probed once per run and cached: every Write-Log in silent mode asks for this path, and the probe itself
+    # logs (via Invoke-WithRetry). Without the cache and the in-progress flag, that recursed forever.
+    if ($script:HomeSharePathCache) { return $script:HomeSharePathCache }
+    $script:ResolvingHomeShare = $true
+    try { $script:HomeSharePathCache = Resolve-HomeSharePath } finally { $script:ResolvingHomeShare = $false }
+    $script:HomeSharePathCache
+}
+
+function Resolve-HomeSharePath {
+    # Order: config DefaultPath (if usable) -> HOMESHARE network share (unless PreferNetworkPath is false) -> Desktop.
+    # Windows' real Desktop location (follows OneDrive/folder redirection); %USERPROFILE%\Desktop only if that fails
+    $desktopPath = [Environment]::GetFolderPath('Desktop')
+    if (-not $desktopPath) { $desktopPath = [IO.Path]::Combine($env:USERPROFILE,'Desktop') }
+
+    $configured = if ($script:Config) { [string]$script:Config.DefaultPath } else { '' }
+    if ($configured) {
+        $configured = [Environment]::ExpandEnvironmentVariables($configured)
+        try {
+            if (!(Test-Path -LiteralPath $configured -PathType Container)) { New-Item -ItemType Directory -Path $configured -Force | Out-Null }
+            Write-Verbose "Using configured DefaultPath: $configured"; return $configured
+        } catch { Write-Verbose "Configured DefaultPath not usable ($configured): $_ - falling back to auto-detection" }
+    }
+    if ($script:Config -and $script:Config.PreferNetworkPath -eq $false) { Write-Verbose 'PreferNetworkPath is false; using Desktop'; return $desktopPath }
+
+    $networkPath = $env:HOMESHARE
+    if (-not $networkPath) { Write-Verbose 'HOMESHARE not set; using Desktop'; return $desktopPath }
     if (!($networkPath -like "\\*")) { Write-Verbose 'Network path not UNC; using Desktop'; return $desktopPath }
     try {
         $result = Invoke-WithRetry -ScriptBlock {
-            $job = Start-Job -ScriptBlock {
+            # Probe on a background runspace (in-process thread) so a dead server can be timed out. Start-Job was
+            # used before, but it launches a new PowerShell process, which alone takes ~3-5 s in Windows PowerShell 5.1
+            # - as long as the whole timeout - so a reachable share could be reported unreachable.
+            $probe = [powershell]::Create().AddScript({
                 param($Path)
-                try { 
-                    if (Test-Path -Path $Path -PathType Container) { 
+                try {
+                    if (Test-Path -LiteralPath $Path -PathType Container) {
                         $temp = Join-Path $Path "_bmtool_temp_$(Get-Random).txt"
-                        New-Item -Path $temp -ItemType File -Force | Out-Null
-                        Remove-Item -Path $temp -Force | Out-Null
-                        return $true 
-                    } 
+                        [System.IO.File]::WriteAllText($temp, '')
+                        [System.IO.File]::Delete($temp)
+                        return $true
+                    }
                 } catch { }
                 return $false
-            } -ArgumentList $networkPath
+            }).AddArgument($networkPath)
             $isAccessible = $false; $timeout = $script:Config.NetworkTimeoutSeconds
-            if (Wait-Job -Job $job -Timeout $timeout) { $isAccessible = Receive-Job -Job $job } else { Write-Log "Network path check timed out after $timeout s" 'DEBUG'; Stop-Job -Job $job -ErrorAction SilentlyContinue }
-            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            $handle = $probe.BeginInvoke()
+            if ($handle.AsyncWaitHandle.WaitOne([int]($timeout * 1000))) {
+                $isAccessible = [bool]($probe.EndInvoke($handle) | Select-Object -Last 1)
+                $probe.Dispose()
+            } else {
+                # Don't wait for or dispose a probe stuck in network I/O; let it finish on its own thread
+                Write-Log "Network path check timed out after $timeout s" 'DEBUG'
+                $null = $probe.BeginStop($null, $null)
+            }
             if (!$isAccessible) { throw "Network path not accessible: $networkPath" }
             $networkPath
         }
@@ -410,11 +467,13 @@ function Get-AllBrowserProfiles {
             }
         }
         'firefox' {
+            # Profiles folder plus any profiles.ini entries stored elsewhere (custom locations)
+            $dirs = @()
             $base = "$env:APPDATA\Mozilla\Firefox\Profiles"
-            if (Test-Path $base) {
-                $dirs = Get-ChildItem -Path $base -Directory | Where-Object { Test-Path (Join-Path $_.FullName $FileName) }
-                foreach ($d in $dirs) { $profiles += @{ Name = $d.Name; Path = $d.FullName; LastUsed = $d.LastWriteTime } }
-            }
+            if (Test-Path $base) { $dirs += @(Get-ChildItem -Path $base -Directory) }
+            $dirs += @(Get-FirefoxIniProfiles | Where-Object { Test-Path -LiteralPath $_.Path -PathType Container } | ForEach-Object { Get-Item -LiteralPath $_.Path })
+            $dirs = @($dirs | Where-Object { Test-Path (Join-Path $_.FullName $FileName) } | Sort-Object FullName -Unique)
+            foreach ($d in $dirs) { $profiles += @{ Name = $d.Name; Path = $d.FullName; LastUsed = $d.LastWriteTime } }
         }
     }
     $profiles | Sort-Object LastUsed -Descending
@@ -429,19 +488,55 @@ function Get-LatestProfilePath { param([string]$BasePath,[string]$FileName)
 function Get-ChromeProfile { Get-LatestProfilePath "$env:LOCALAPPDATA\Google\Chrome\User Data" 'Bookmarks' }
 function Get-EdgeProfile   { Get-LatestProfilePath "$env:LOCALAPPDATA\Microsoft\Edge\User Data"  'Bookmarks' }
 
-function Get-FirefoxProfile {
-    $ini = "$env:APPDATA\Mozilla\Firefox\profiles.ini"
-    if (!(Test-Path $ini)) { Write-Verbose "Firefox profiles.ini not found: $ini"; return $null }
-    $lines = Get-Content $ini | Where-Object { $_ -and ($_ -notmatch '^\s*#') }
-    $pathLine  = $lines | Where-Object { $_ -match '^Path=' } | Select-Object -First 1
-    $isRelLine = $lines | Where-Object { $_ -match '^IsRelative=' } | Select-Object -First 1
-    $isRel = $false; if ($isRelLine) { $isRel = ($isRelLine -split '=',2)[1] -eq '1' }
-    $rawPath = if ($pathLine) { ($pathLine -split '=',2)[1] } else { $null }
-    if ($rawPath) {
-        $profileFull = if ($isRel) { Join-Path "$env:APPDATA\Mozilla\Firefox" $rawPath } else { $rawPath }
-        if (Test-Path (Join-Path $profileFull 'places.sqlite')) { Write-Verbose "Found Firefox profile: $profileFull"; return $profileFull }
+function Get-FirefoxIniProfiles {
+    # Parses profiles.ini into profile entries, flagging the profile each Firefox install actually launches
+    # ([Install*] Default=) and the legacy default ([Profile*] Default=1).
+    $base = "$env:APPDATA\Mozilla\Firefox"
+    $ini = Join-Path $base 'profiles.ini'
+    if (!(Test-Path -LiteralPath $ini)) { Write-Verbose "Firefox profiles.ini not found: $ini"; return @() }
+
+    $sections = [ordered]@{}; $current = $null
+    foreach ($line in Get-Content -LiteralPath $ini) {
+        $t = $line.Trim()
+        if (!$t -or $t.StartsWith('#') -or $t.StartsWith(';')) { continue }
+        if ($t -match '^\[(.+)\]$') { $current = $Matches[1]; $sections[$current] = @{}; continue }
+        if ($current -and $t -match '^([^=]+)=(.*)$') { $sections[$current][$Matches[1].Trim()] = $Matches[2].Trim() }
     }
-    Write-Verbose 'Primary profile not valid; searching for any profile with places.sqlite'
+
+    function _Resolve([string]$p, [bool]$relative) {
+        $p = $p -replace '/', '\'
+        if ($relative -or -not [System.IO.Path]::IsPathRooted($p)) { Join-Path $base $p } else { $p }
+    }
+
+    $installDefaults = @(foreach ($k in $sections.Keys) {
+        if ($k -like 'Install*' -and $sections[$k]['Default']) { [System.IO.Path]::GetFullPath((_Resolve $sections[$k]['Default'] $false)) }
+    })
+
+    foreach ($k in $sections.Keys) {
+        if ($k -notlike 'Profile*') { continue }
+        $s = $sections[$k]
+        if (-not $s['Path']) { continue }
+        $full = [System.IO.Path]::GetFullPath((_Resolve $s['Path'] ($s['IsRelative'] -eq '1')))
+        [pscustomobject]@{
+            Name           = Split-Path $full -Leaf
+            Path           = $full
+            InstallDefault = $installDefaults -contains $full
+            LegacyDefault  = $s['Default'] -eq '1'
+            HasPlaces      = Test-Path -LiteralPath (Join-Path $full 'places.sqlite')
+        }
+    }
+}
+
+function Get-FirefoxProfile {
+    # Preference: the profile a Firefox install launches, then the legacy Default=1 profile, then the most
+    # recently used profile with bookmarks. Only profiles that actually have places.sqlite are considered.
+    $candidates = @(Get-FirefoxIniProfiles | Where-Object HasPlaces)
+    $pick = $candidates | Where-Object InstallDefault |
+        Sort-Object { (Get-Item -LiteralPath (Join-Path $_.Path 'places.sqlite')).LastWriteTime } -Descending | Select-Object -First 1
+    if (-not $pick) { $pick = $candidates | Where-Object LegacyDefault | Select-Object -First 1 }
+    if ($pick) { Write-Verbose "Found Firefox profile: $($pick.Path)"; return $pick.Path }
+
+    Write-Verbose 'No default profile in profiles.ini has places.sqlite; using most recently used profile'
     Get-LatestProfilePath "$env:APPDATA\Mozilla\Firefox\Profiles" 'places.sqlite'
 }
 
@@ -457,10 +552,11 @@ function Backup-ExistingBookmarks {
         if (!(Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
         $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $backupPath = Join-Path $backupDir ("$BookmarkFile.$timestamp.backup")
-        Copy-Item $sourceFile $backupPath -Force
+        if ($BrowserName -eq 'Firefox') { Copy-FirefoxPlaces -Src $sourceFile -Dst $backupPath } else { Copy-Item $sourceFile $backupPath -Force }
         Write-Log "Created backup: $backupPath"
-        $backups = Get-ChildItem $backupDir -Filter "$BookmarkFile.*.backup" | Sort-Object LastWriteTime -Descending
-        if ($backups.Count -gt 10) { $backups | Select-Object -Skip 10 | ForEach-Object { Remove-Item $_.FullName -Force; Write-Verbose "Removed old backup: $($_.Name)" } }
+        # Sort by the timestamp in the name: Copy-Item keeps the source's LastWriteTime, so file dates don't reflect backup order
+        $backups = @(Get-ChildItem -LiteralPath $backupDir -Filter "$BookmarkFile.*.backup" | Sort-Object Name -Descending)
+        if ($backups.Count -gt 10) { $backups | Select-Object -Skip 10 | ForEach-Object { Remove-Item -LiteralPath $_.FullName,"$($_.FullName)-wal","$($_.FullName)-shm" -Force -ErrorAction SilentlyContinue; Write-Verbose "Removed old backup: $($_.Name)" } }
         $backupPath
     } catch { Write-Warning "Failed to create backup for ${BrowserName}: $_"; $null }
 }
@@ -483,15 +579,36 @@ function Test-BookmarkFileIntegrity {
                 return $isValid
             }
             'firefox' {
-                $fi = Get-Item $FilePath
-                $isValid = ($fi.Length -gt 0) -and ($fi.Extension -eq '.sqlite')
-                if ($isValid) {
-                    $header = [System.IO.File]::ReadAllBytes($FilePath) | Select-Object -First 16
-                    $sig = [System.Text.Encoding]::ASCII.GetString($header[0..15])
-                    $isValid = $sig.StartsWith('SQLite format 3')
+                $fi = Get-Item -LiteralPath $FilePath
+                if ($fi.Length -lt 100) { Write-Verbose 'Firefox file too small to be a SQLite database'; return $false }
+                $header = New-Object byte[] 16
+                $fs = [System.IO.File]::Open($FilePath, 'Open', 'Read', 'ReadWrite')
+                try { $null = $fs.Read($header, 0, 16) } finally { $fs.Dispose() }
+                if (-not [System.Text.Encoding]::ASCII.GetString($header).StartsWith('SQLite format 3')) { Write-Verbose 'Not a SQLite database'; return $false }
+
+                if (-not $script:SQLiteAvailable) { Write-Verbose "Firefox sqlite header valid (deep check skipped - SQLite unavailable): $FilePath"; return $true }
+
+                # Deep check on a temp copy (never touches the source): must be a healthy Firefox places database
+                $tmp = [System.IO.Path]::GetTempFileName(); $conn = $null; $cmd = $null
+                try {
+                    Copy-FirefoxPlaces -Src $FilePath -Dst $tmp
+                    $conn = New-SQLiteConnection "Data Source=$tmp;Version=3;Pooling=False;"
+                    $conn.Open()
+                    $cmd = $conn.CreateCommand()
+                    $cmd.CommandText = 'PRAGMA quick_check;'
+                    $check = [string]$cmd.ExecuteScalar()
+                    $cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('moz_bookmarks','moz_places')"
+                    $tables = [int]$cmd.ExecuteScalar()
+                    $roots = 0
+                    if ($tables -eq 2) { $cmd.CommandText = "SELECT COUNT(*) FROM moz_bookmarks WHERE guid IN ('root________','menu________','toolbar_____','unfiled_____')"; $roots = [int]$cmd.ExecuteScalar() }
+                    $isValid = ($check -eq 'ok') -and ($tables -eq 2) -and ($roots -eq 4)
+                    if ($isValid) { Write-Verbose "Firefox places database valid: $FilePath" } else { Write-Verbose "Invalid Firefox database (quick_check=$check, tables=$tables, roots=$roots)" }
+                    return $isValid
+                } finally {
+                    if ($cmd) { $cmd.Dispose() }
+                    if ($conn) { $conn.Dispose() }
+                    Remove-Item -LiteralPath $tmp,"$tmp-wal","$tmp-shm" -Force -ErrorAction SilentlyContinue
                 }
-                if ($isValid) { Write-Verbose "Firefox sqlite valid: $FilePath" } else { Write-Verbose 'Invalid Firefox sqlite format' }
-                return $isValid
             }
             default { Write-Warning "Unknown browser type for integrity check: $BrowserType"; return $false }
         }
@@ -524,47 +641,70 @@ DETAILS:
 # =====================================================================================
 # HTML CONVERSION FUNCTIONS
 # =====================================================================================
-function ConvertTo-ChromeHtml {
-    param([Parameter(Mandatory)][string]$JsonPath,[Parameter(Mandatory)][string]$OutputPath)
-    try {
-        $json = Get-Content $JsonPath -Raw | ConvertFrom-Json
-        $html = @"
+# Shared Netscape bookmark-file (the standard browser import/export HTML) helpers
+$script:NetscapeHeader = @"
 <!DOCTYPE NETSCAPE-Bookmark-file-1>
-<!-- This is an automatically generated file. It will be read and overwritten. DO NOT EDIT! -->
+<!-- This is an automatically generated file.
+     It will be read and overwritten.
+     DO NOT EDIT! -->
 <META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
-<DL><p>
+
 "@
-        
-        function Add-BookmarkFolder {
-            param($folder, $indent = 1)
-            $spaces = "    " * $indent
-            $result = "$spaces<DT><H3>$($folder.name)</H3>`n$spaces<DL><p>`n"
-            
-            if ($folder.children) {
-                foreach ($child in $folder.children) {
-                    if ($child.type -eq 'folder') {
-                        $result += Add-BookmarkFolder $child ($indent + 1)
-                    } elseif ($child.type -eq 'url') {
-                        $addDate = if ($child.date_added) { " ADD_DATE=`"$($child.date_added)`"" } else { "" }
-                        $result += "$spaces    <DT><A HREF=`"$($child.url)`"$addDate>$($child.name)</A>`n"
-                    }
-                }
+
+function ConvertTo-HtmlText { param([AllowNull()][AllowEmptyString()][string]$Text) [System.Net.WebUtility]::HtmlEncode([string]$Text) }
+
+function Get-NetscapeDateAttr {
+    # Netscape format stores Unix time in seconds. Chrome uses microseconds since 1601; Firefox microseconds since 1970.
+    param([string]$Name,$Value,[ValidateSet('Chrome','Firefox')][string]$Epoch)
+    $n = [long]0
+    if ($null -eq $Value -or -not [long]::TryParse([string]$Value, [ref]$n) -or $n -le 0) { return '' }
+    $secs = [long][math]::Floor($n / 1000000)
+    if ($Epoch -eq 'Chrome') { $secs -= 11644473600 }
+    if ($secs -le 0) { return '' }
+    " $Name=`"$secs`""
+}
+
+function Save-NetscapeHtml {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][System.Text.StringBuilder]$Body)
+    $text = $script:NetscapeHeader + "<DL><p>`n" + $Body.ToString() + "</DL><p>`n"
+    [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function ConvertTo-ChromeHtml {
+    param([Parameter(Mandatory)][string]$JsonPath,[Parameter(Mandatory)][string]$OutputPath)
+    try {
+        $json = Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $sb = New-Object System.Text.StringBuilder
+
+        function _Prop($obj, [string]$name) { $p = $obj.PSObject.Properties[$name]; if ($p) { $p.Value } else { $null } }
+
+        function _Node($node, [int]$depth, [string]$extraAttr) {
+            $pad = '    ' * $depth
+            $type = _Prop $node 'type'
+            $title = ConvertTo-HtmlText (_Prop $node 'name')
+            $added = Get-NetscapeDateAttr 'ADD_DATE' (_Prop $node 'date_added') 'Chrome'
+            if ($type -eq 'folder') {
+                $modified = Get-NetscapeDateAttr 'LAST_MODIFIED' (_Prop $node 'date_modified') 'Chrome'
+                $null = $sb.Append("$pad<DT><H3$added$modified$extraAttr>$title</H3>`n$pad<DL><p>`n")
+                foreach ($child in @(_Prop $node 'children')) { if ($null -ne $child) { _Node $child ($depth + 1) '' } }
+                $null = $sb.Append("$pad</DL><p>`n")
+            } elseif ($type -eq 'url') {
+                $href = ConvertTo-HtmlText (_Prop $node 'url')
+                $null = $sb.Append("$pad<DT><A HREF=`"$href`"$added>$title</A>`n")
             }
-            $result += "$spaces</DL><p>`n"
-            return $result
         }
-        
-        if ($json.roots.bookmark_bar) {
-            $html += Add-BookmarkFolder $json.roots.bookmark_bar
+
+        $roots = _Prop $json 'roots'
+        $bar = _Prop $roots 'bookmark_bar'
+        if ($bar) { _Node $bar 1 ' PERSONAL_TOOLBAR_FOLDER="true"' }
+        foreach ($rootName in 'other','synced') {
+            $r = _Prop $roots $rootName
+            if ($r -and @(_Prop $r 'children' | Where-Object { $null -ne $_ }).Count -gt 0) { _Node $r 1 '' }
         }
-        if ($json.roots.other) {
-            $html += Add-BookmarkFolder $json.roots.other
-        }
-        
-        $html += "</DL><p>`n"
-        $html | Out-File -FilePath $OutputPath -Encoding UTF8
+
+        Save-NetscapeHtml -Path $OutputPath -Body $sb
         Write-Log "Converted Chrome bookmarks to HTML: $OutputPath"
         return $true
     } catch {
@@ -573,72 +713,151 @@ function ConvertTo-ChromeHtml {
     }
 }
 
+function New-SQLiteConnection {
+    param([Parameter(Mandatory)][string]$ConnectionString)
+    # Try standard New-Object first
+    try {
+        return New-Object -TypeName System.Data.SQLite.SQLiteConnection -ArgumentList $ConnectionString -ErrorAction Stop
+    } catch {
+        # Fallback: Use Reflection to instantiate if the type isn't visible to PowerShell
+        Write-Verbose "Standard instantiation failed, trying reflection..."
+        $assembly = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'System.Data.SQLite' } | Select-Object -First 1
+        if ($null -eq $assembly) { throw "System.Data.SQLite assembly is not loaded." }
+
+        $type = $assembly.GetType('System.Data.SQLite.SQLiteConnection')
+        if ($null -eq $type) { throw "System.Data.SQLite.SQLiteConnection type not found in assembly." }
+
+        return [Activator]::CreateInstance($type, @($ConnectionString))
+    }
+}
+
+function Copy-FirefoxPlaces {
+    # Copies places.sqlite plus its write-ahead log (places.sqlite-wal). While Firefox is running, recent
+    # bookmark changes live only in the WAL, so copying the main file alone can miss them. The WAL is then
+    # checkpointed into the copy so the destination is a single self-contained .sqlite file.
+    param([Parameter(Mandatory)][string]$Src,[Parameter(Mandatory)][string]$Dst)
+
+    $srcWal = "$Src-wal"; $dstWal = "$Dst-wal"; $dstShm = "$Dst-shm"
+    Remove-Item -LiteralPath $dstWal,$dstShm -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $Src -Destination $Dst -Force
+
+    $hasWal = (Test-Path -LiteralPath $srcWal) -and (Get-Item -LiteralPath $srcWal).Length -gt 0
+    # Header bytes 18/19 = 2 means the file is in WAL mode; opening it later (even read-only) would create
+    # -wal/-shm files next to the backup, so it is switched to a standalone (rollback-journal) file below.
+    $hdr = New-Object byte[] 20
+    $fs = [System.IO.File]::Open($Dst, 'Open', 'Read', 'ReadWrite')
+    try { $null = $fs.Read($hdr, 0, 20) } finally { $fs.Dispose() }
+    $isWalMode = $hdr[18] -eq 2 -or $hdr[19] -eq 2
+    if (-not $hasWal -and -not $isWalMode) { return }
+
+    if ($hasWal) { Copy-Item -LiteralPath $srcWal -Destination $dstWal -Force }
+
+    if (-not $script:SQLiteAvailable) {
+        if ($hasWal) { Write-Log "System.Data.SQLite not available - kept Firefox WAL beside backup: $dstWal" 'WARN' }
+        return
+    }
+
+    # Merge in a local temp copy, then copy the result over: SQLite cannot open UNC paths (\\server\share\...)
+    $stage = [System.IO.Path]::GetTempFileName()
+    $connection = $null; $command = $null
+    try {
+        Copy-Item -LiteralPath $Dst -Destination $stage -Force
+        if ($hasWal) { Copy-Item -LiteralPath $srcWal -Destination "$stage-wal" -Force }
+        $connection = New-SQLiteConnection "Data Source=$stage;Version=3;Pooling=False;"
+        $connection.Open()
+        $command = $connection.CreateCommand()
+        $command.CommandText = 'PRAGMA wal_checkpoint(TRUNCATE);'
+        $null = $command.ExecuteNonQuery()
+        $command.CommandText = 'PRAGMA journal_mode=DELETE;'
+        $null = $command.ExecuteNonQuery()
+        # Undisposed commands keep the file handle open after Close()
+        $command.Dispose(); $command = $null
+        $connection.Close(); $connection.Dispose(); $connection = $null
+        Copy-Item -LiteralPath $stage -Destination $Dst -Force
+        Write-Verbose "Merged Firefox WAL into backup: $Dst"
+    } catch {
+        Write-Log "Failed to merge Firefox WAL into ${Dst}: $_ (WAL kept beside backup)" 'WARN'
+        return
+    } finally {
+        if ($command) { $command.Dispose() }
+        if ($connection) { $connection.Close(); $connection.Dispose() }
+        Remove-Item -LiteralPath $stage,"$stage-wal","$stage-shm" -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $dstWal,$dstShm -Force -ErrorAction SilentlyContinue
+}
+
 function ConvertTo-FirefoxHtml {
     param([Parameter(Mandatory)][string]$SqlitePath,[Parameter(Mandatory)][string]$OutputPath)
-    
+
     if (-not $script:SQLiteAvailable) {
         Write-Log "System.Data.SQLite not available - Firefox HTML conversion skipped" 'INFO'
         Write-Log "Firefox bookmarks exported as SQLite database successfully" 'INFO'
         return $false
     }
-    
+
     $connection = $null
+    $command = $null
+    $reader = $null
     $tempDbPath = $null
 
     try {
-        # Copy to temp file to avoid UNC path issues with SQLite
+        # Copy to temp file (with WAL, if any) to avoid UNC path issues and locks with SQLite
         $tempDbPath = [System.IO.Path]::GetTempFileName()
-        Copy-Item -LiteralPath $SqlitePath -Destination $tempDbPath -Force
+        Copy-FirefoxPlaces -Src $SqlitePath -Dst $tempDbPath
 
-        # Create connection using direct type instantiation after assembly is loaded
-        $connectionString = "Data Source=$tempDbPath;Version=3;Read Only=True;"
-        
-        # Try standard New-Object first
-        try {
-            $connection = New-Object -TypeName System.Data.SQLite.SQLiteConnection -ArgumentList $connectionString -ErrorAction Stop
-        } catch {
-            # Fallback: Use Reflection to instantiate if the type isn't visible to PowerShell
-            Write-Verbose "Standard instantiation failed, trying reflection..."
-            $assembly = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'System.Data.SQLite' } | Select-Object -First 1
-            if ($null -eq $assembly) { throw "System.Data.SQLite assembly is not loaded." }
-            
-            $type = $assembly.GetType('System.Data.SQLite.SQLiteConnection')
-            if ($null -eq $type) { throw "System.Data.SQLite.SQLiteConnection type not found in assembly." }
-            
-            $connection = [Activator]::CreateInstance($type, @($connectionString))
-        }
-
+        $connection = New-SQLiteConnection "Data Source=$tempDbPath;Version=3;Read Only=True;Pooling=False;"
         $connection.Open()
         
-        $html = @"
-<!DOCTYPE NETSCAPE-Bookmark-file-1>
-<!-- This is an automatically generated file. It will be read and overwritten. DO NOT EDIT! -->
-<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
-<TITLE>Bookmarks</TITLE>
-<H1>Bookmarks</H1>
-<DL><p>
-"@
-        
-        $query = "SELECT mb.id, mb.parent, mb.title, mp.url, mb.dateAdded FROM moz_bookmarks mb LEFT JOIN moz_places mp ON mb.fk = mp.id WHERE mb.type = 1 ORDER BY mb.parent, mb.position"
+        # Load the whole bookmark tree (type 1 = bookmark, 2 = folder, 3 = separator)
         $command = $connection.CreateCommand()
-        $command.CommandText = $query
+        $command.CommandText = "SELECT mb.id, mb.type, mb.parent, mb.title, mb.guid, mb.dateAdded, mb.lastModified, mp.url FROM moz_bookmarks mb LEFT JOIN moz_places mp ON mb.fk = mp.id ORDER BY mb.parent, mb.position"
         $reader = $command.ExecuteReader()
-        
+        $children = @{}; $byGuid = @{}
+        function _Val($v) { if ($v -is [System.DBNull]) { $null } else { $v } }
         while ($reader.Read()) {
-            $title = $reader["title"]
-            $url = $reader["url"]
-            $dateAdded = $reader["dateAdded"]
-            if ($url) {
-                $addDate = if ($dateAdded) { " ADD_DATE=`"$dateAdded`"" } else { "" }
-                $html += "    <DT><A HREF=`"$url`"$addDate>$title</A>`n"
+            $row = [pscustomobject]@{
+                Id = [long]$reader['id']; Type = [int]$reader['type']; Parent = [long](_Val $reader['parent'])
+                Title = [string](_Val $reader['title']); Guid = [string](_Val $reader['guid']); Url = [string](_Val $reader['url'])
+                Added = _Val $reader['dateAdded']; Modified = _Val $reader['lastModified']
+            }
+            if (-not $children.ContainsKey($row.Parent)) { $children[$row.Parent] = New-Object System.Collections.Generic.List[object] }
+            $children[$row.Parent].Add($row)
+            if ($row.Guid) { $byGuid[$row.Guid] = $row }
+        }
+        $reader.Dispose(); $reader = $null
+
+        $sb = New-Object System.Text.StringBuilder
+        function _Kids([long]$id) { if ($children.ContainsKey($id)) { $children[$id] } else { @() } }
+        function _Items([long]$parentId, [int]$depth) {
+            $pad = '    ' * $depth
+            foreach ($n in (_Kids $parentId)) {
+                $added = Get-NetscapeDateAttr 'ADD_DATE' $n.Added 'Firefox'
+                $modified = Get-NetscapeDateAttr 'LAST_MODIFIED' $n.Modified 'Firefox'
+                switch ($n.Type) {
+                    1 { if ($n.Url) { $null = $sb.Append("$pad<DT><A HREF=`"$(ConvertTo-HtmlText $n.Url)`"$added$modified>$(ConvertTo-HtmlText $n.Title)</A>`n") } }
+                    2 { _Folder $n $depth '' $n.Title }
+                    3 { $null = $sb.Append("$pad<HR>`n") }
+                }
             }
         }
-        
-        $reader.Close()
+        function _Folder($n, [int]$depth, [string]$extraAttr, [string]$title) {
+            $pad = '    ' * $depth
+            $added = Get-NetscapeDateAttr 'ADD_DATE' $n.Added 'Firefox'
+            $modified = Get-NetscapeDateAttr 'LAST_MODIFIED' $n.Modified 'Firefox'
+            $null = $sb.Append("$pad<DT><H3$added$modified$extraAttr>$(ConvertTo-HtmlText $title)</H3>`n$pad<DL><p>`n")
+            _Items $n.Id ($depth + 1)
+            $null = $sb.Append("$pad</DL><p>`n")
+        }
+
+        # Same layout as Firefox's own HTML export: menu items at top level, then the special folders.
+        # The tags root is skipped (tags are not bookmarks).
+        if ($byGuid.ContainsKey('menu________')) { _Items $byGuid['menu________'].Id 1 }
+        if ($byGuid.ContainsKey('toolbar_____')) { _Folder $byGuid['toolbar_____'] 1 ' PERSONAL_TOOLBAR_FOLDER="true"' 'Bookmarks Toolbar' }
+        if ($byGuid.ContainsKey('unfiled_____') -and @(_Kids $byGuid['unfiled_____'].Id).Count -gt 0) { _Folder $byGuid['unfiled_____'] 1 ' UNFILED_BOOKMARKS_FOLDER="true"' 'Other Bookmarks' }
+        if ($byGuid.ContainsKey('mobile______') -and @(_Kids $byGuid['mobile______'].Id).Count -gt 0) { _Folder $byGuid['mobile______'] 1 '' 'Mobile Bookmarks' }
+
         $connection.Close()
-        
-        $html += "</DL><p>`n"
-        $html | Out-File -FilePath $OutputPath -Encoding UTF8
+        Save-NetscapeHtml -Path $OutputPath -Body $sb
         Write-Log "Converted Firefox bookmarks to HTML: $OutputPath"
         return $true
     } catch {
@@ -646,8 +865,12 @@ function ConvertTo-FirefoxHtml {
         if ($connection -and $connection.State -eq 'Open') { $connection.Close() }
         return $false
     } finally {
-        if ($tempDbPath -and (Test-Path $tempDbPath)) {
-            Remove-Item $tempDbPath -Force -ErrorAction SilentlyContinue
+        # Undisposed readers/commands keep the temp file locked, so it couldn't be deleted
+        if ($reader) { $reader.Dispose() }
+        if ($command) { $command.Dispose() }
+        if ($connection) { $connection.Dispose() }
+        if ($tempDbPath) {
+            Remove-Item -LiteralPath $tempDbPath,"$tempDbPath-wal","$tempDbPath-shm" -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -656,10 +879,12 @@ function ConvertTo-FirefoxHtml {
 # ZIP ARCHIVE FUNCTIONS
 # =====================================================================================
 function New-ZipArchive {
-    param([Parameter(Mandatory)][string]$SourcePath,[Parameter(Mandatory)][string]$ZipPath)
+    param([Parameter(Mandatory)][string]$SourcePath,[Parameter(Mandatory)][string]$ZipPath,
+          # Only include files whose name contains this (e.g. the run's timestamp), so older exports in the folder are left out
+          [string]$NameContains)
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $files = Get-ChildItem -Path $SourcePath -File | Where-Object { $_.Extension -in '.json','.sqlite','.html','.htm' }
+        $files = @(Get-ChildItem -LiteralPath $SourcePath -File | Where-Object { $_.Extension -in '.json','.sqlite','.html','.htm' -and (-not $NameContains -or $_.Name.Contains($NameContains)) })
         
         if ($files.Count -eq 0) {
             Write-Log "No bookmark files found to zip in: $SourcePath" 'WARN'
@@ -740,7 +965,7 @@ function Export-Bookmarks {
         if ($profiles -and $profiles.Count -gt 0) { 
             foreach ($pr in $profiles) { 
                 $src = Join-Path $pr.Path 'Bookmarks'
-                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\\s','_')" } else { '' }
+                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\s','_')" } else { '' }
                 
                 if ($ExportHtmlOnly) {
                     # Export only HTML
@@ -768,7 +993,7 @@ function Export-Bookmarks {
         if ($profiles -and $profiles.Count -gt 0) { 
             foreach ($pr in $profiles) { 
                 $src = Join-Path $pr.Path 'Bookmarks'
-                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\\s','_')" } else { '' }
+                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\s','_')" } else { '' }
                 
                 if ($ExportHtmlOnly) {
                     # Export only HTML
@@ -796,7 +1021,7 @@ function Export-Bookmarks {
         if ($profiles -and $profiles.Count -gt 0) { 
             foreach ($pr in $profiles) { 
                 $src = Join-Path $pr.Path 'places.sqlite'
-                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\\s','_')" } else { '' }
+                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\s','_')" } else { '' }
                 
                 if ($ExportHtmlOnly) {
                     # Export only HTML
@@ -810,7 +1035,11 @@ function Export-Bookmarks {
                     # Export both SQLite and HTML (default)
                     $dstSqlite = Join-Path $Path ("Firefox$suffix`_BookmarkData_$timestamp.sqlite")
                     $dstHtml = Join-Path $Path ("Firefox$suffix`_Bookmarks_$timestamp.html")
-                    _Copy -Src $src -Dst $dstSqlite -Label 'Firefox'
+                    if ($PSCmdlet.ShouldProcess($dstSqlite, "Export Firefox bookmarks from $src")) {
+                        Copy-FirefoxPlaces -Src $src -Dst $dstSqlite
+                        Write-Log "SUCCESS: Exported Firefox from $src to $dstSqlite"
+                        $script:OperationResults += [pscustomobject]@{ Browser='Firefox'; Success=$true; Message="Exported to $dstSqlite" }
+                    }
                     ConvertTo-FirefoxHtml -SqlitePath $dstSqlite -OutputPath $dstHtml | Out-Null
                 }
             }
@@ -824,12 +1053,54 @@ function Export-Bookmarks {
     if ($CreateZip) {
         $zipPath = Join-Path $Path "BookmarkBackup_$timestamp.zip"
         Write-Log "Creating ZIP archive: $zipPath"
-        if (New-ZipArchive -SourcePath $Path -ZipPath $zipPath) {
+        if (New-ZipArchive -SourcePath $Path -ZipPath $zipPath -NameContains "_$timestamp") {
             $script:OperationResults += [pscustomobject]@{ Browser='ZIP'; Success=$true; Message="Created archive: $zipPath" }
         } else {
             $script:OperationResults += [pscustomobject]@{ Browser='ZIP'; Success=$false; Message="ZIP creation failed" }
         }
     }
+}
+
+function Find-BookmarkImportSource {
+    # Locates the file to import for a browser in $Path. Accepts this tool's export names
+    # (<Browser>[-<Profile>]_BookmarkData_<timestamp><ext>, newest wins) and the legacy names
+    # (<LegacyBase>[-<Profile>]<ext>). Returns $null if nothing matches.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Browser,
+        [Parameter(Mandatory)][string]$Extension,
+        [Parameter(Mandatory)][string]$LegacyBase,
+        [string]$ProfileSuffix,
+        # Raw profile name: older exports kept spaces in the file name ("Chrome-Profile 1_...")
+        [string]$ProfileName
+    )
+
+    function _Newest([string]$Filter) {
+        Get-ChildItem -LiteralPath $Path -Filter $Filter -File -ErrorAction SilentlyContinue |
+            Sort-Object @{ Expression = { if ($_.Name -match '_BookmarkData_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})') { $Matches[1] } else { '' } } }, LastWriteTime -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+    function _Exact([string]$Name) { $f = Join-Path $Path $Name; if (Test-Path -LiteralPath $f -PathType Leaf) { $f } }
+
+    $found = $null
+    $suffixes = @(@($ProfileSuffix, $(if ($ProfileName) { "-$ProfileName" })) | Where-Object { $_ } | Select-Object -Unique)
+    foreach ($sfx in $suffixes) {
+        if (-not $found) { $found = _Newest "$Browser$sfx`_BookmarkData_*$Extension" }
+        if (-not $found) { $found = _Exact "$LegacyBase$sfx$Extension" }
+    }
+    if ($suffixes) {
+        # Importing a specific profile (-AllProfiles): only that profile's own export may be used. Falling back
+        # to another profile's file would silently replace this profile's bookmarks with someone else's.
+        if ($found) { Write-Log "Selected $Browser import file: $found" } else { Write-Log "No $Browser export found for profile '$($suffixes[0].TrimStart('-'))' in $Path" 'WARN' }
+        return $found
+    }
+    if (-not $found) { $found = _Newest "$Browser`_BookmarkData_*$Extension" }
+    if (-not $found) { $found = _Exact "$LegacyBase$Extension" }
+    # Last resort: any per-profile export for this browser (e.g. from an -AllProfiles export or the desktop app)
+    if (-not $found) { $found = _Newest "$Browser*_BookmarkData_*$Extension" }
+
+    if ($found) { Write-Log "Selected $Browser import file: $found" }
+    $found
 }
 
 function Import-Bookmarks {
@@ -886,8 +1157,25 @@ function Import-Bookmarks {
 
     function _CopyIn { param([string]$Src,[string]$Dst,[string]$Label)
         if (!(Test-Path -LiteralPath $Src)) { Write-Log "$Label import source not found: $Src" 'WARN'; $script:OperationResults += [pscustomobject]@{ Browser=$Label; Success=$false; Message="Source missing: $Src" }; return }
+        if ($script:Config.VerifyFileIntegrity -ne $false -and -not (Test-BookmarkFileIntegrity -FilePath $Src -BrowserType $Label)) {
+            Write-Log "$Label import skipped - $Src is not a valid $Label bookmark file (profile left unchanged)" 'ERROR'
+            $script:OperationResults += [pscustomobject]@{ Browser=$Label; Success=$false; Message="Invalid bookmark file: $Src" }
+            return
+        }
         if ($script:Config.AutoBackupBeforeImport) { $null = Backup-ExistingBookmarks -BrowserProfile (Split-Path $Dst -Parent) -BookmarkFile (Split-Path $Dst -Leaf) -BrowserName $Label }
         if ($PSCmdlet.ShouldProcess($Dst, "Import $Label bookmarks from $Src")) {
+            if ($Label -eq 'Firefox') {
+                # A leftover WAL/SHM (e.g. after Firefox was force-closed) would be replayed on top of the
+                # imported database at next launch, undoing or corrupting the import. Its contents are already
+                # in the pre-import backup above.
+                foreach ($side in "$Dst-wal","$Dst-shm") {
+                    if (Test-Path -LiteralPath $side) {
+                        try { Remove-Item -LiteralPath $side -Force }
+                        catch { throw "Cannot remove $side - is Firefox still running? Close Firefox and retry the import. ($_)" }
+                        Write-Verbose "Removed stale Firefox file: $side"
+                    }
+                }
+            }
             Copy-Item -LiteralPath $Src -Destination $Dst -Force
             Write-Log "SUCCESS: Imported $Label from $Src to $Dst"
             $script:OperationResults += [pscustomobject]@{ Browser=$Label; Success=$true; Message="Imported from $Src" }
@@ -900,9 +1188,10 @@ function Import-Bookmarks {
         if ($targets -and $targets.Count -gt 0) {
             foreach ($pr in $targets) {
                 $dst = Join-Path $pr.Path 'Bookmarks'
-                $candidate = if ($AllProfiles) { Join-Path $Path ("Chrome-Bookmarks-$($pr.Name -replace '\\s','_').json") } else { Join-Path $Path 'Chrome-Bookmarks.json' }
-                $src = if (Test-Path $candidate) { $candidate } else { Join-Path $Path 'Chrome-Bookmarks.json' }
-                if (!(Test-Path $src) -and -not $Silent) { Write-Log "Prompting for Chrome file" 'INFO'; $tmp = Select-FileDialog -Filter 'Chrome Bookmarks (*.json)|*.json'; if ($tmp) { $src = $tmp; Write-Log "User selected Chrome import file: $src" } }
+                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\s','_')" } else { '' }
+                $src = Find-BookmarkImportSource -Path $Path -Browser 'Chrome' -Extension '.json' -LegacyBase 'Chrome-Bookmarks' -ProfileSuffix $suffix -ProfileName $(if ($AllProfiles) { $pr.Name })
+                if (-not $src) { $src = Join-Path $Path "Chrome$suffix`_BookmarkData_*.json" }
+                if (!(Test-Path -LiteralPath $src) -and -not $Silent) { Write-Log "Prompting for Chrome file" 'INFO'; $tmp = Select-FileDialog -Filter 'Chrome Bookmarks (*.json)|*.json'; if ($tmp) { $src = $tmp; Write-Log "User selected Chrome import file: $src" } }
                 _CopyIn -Src $src -Dst $dst -Label 'Chrome'
             }
         } else { Write-Log 'Chrome profile(s) not found' 'WARN' }
@@ -914,9 +1203,10 @@ function Import-Bookmarks {
         if ($targets -and $targets.Count -gt 0) {
             foreach ($pr in $targets) {
                 $dst = Join-Path $pr.Path 'Bookmarks'
-                $candidate = if ($AllProfiles) { Join-Path $Path ("Edge-Bookmarks-$($pr.Name -replace '\\s','_').json") } else { Join-Path $Path 'Edge-Bookmarks.json' }
-                $src = if (Test-Path $candidate) { $candidate } else { Join-Path $Path 'Edge-Bookmarks.json' }
-                if (!(Test-Path $src) -and -not $Silent) { Write-Log "Prompting for Edge file" 'INFO'; $tmp = Select-FileDialog -Filter 'Edge Bookmarks (*.json)|*.json'; if ($tmp) { $src = $tmp; Write-Log "User selected Edge import file: $src" } }
+                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\s','_')" } else { '' }
+                $src = Find-BookmarkImportSource -Path $Path -Browser 'Edge' -Extension '.json' -LegacyBase 'Edge-Bookmarks' -ProfileSuffix $suffix -ProfileName $(if ($AllProfiles) { $pr.Name })
+                if (-not $src) { $src = Join-Path $Path "Edge$suffix`_BookmarkData_*.json" }
+                if (!(Test-Path -LiteralPath $src) -and -not $Silent) { Write-Log "Prompting for Edge file" 'INFO'; $tmp = Select-FileDialog -Filter 'Edge Bookmarks (*.json)|*.json'; if ($tmp) { $src = $tmp; Write-Log "User selected Edge import file: $src" } }
                 _CopyIn -Src $src -Dst $dst -Label 'Edge'
             }
         } else { Write-Log 'Edge profile(s) not found' 'WARN' }
@@ -928,9 +1218,10 @@ function Import-Bookmarks {
         if ($targets -and $targets.Count -gt 0) {
             foreach ($pr in $targets) {
                 $dst = Join-Path $pr.Path 'places.sqlite'
-                $candidate = if ($AllProfiles) { Join-Path $Path ("Firefox-places-$($pr.Name -replace '\\s','_').sqlite") } else { Join-Path $Path 'Firefox-places.sqlite' }
-                $src = if (Test-Path $candidate) { $candidate } else { Join-Path $Path 'Firefox-places.sqlite' }
-                if (!(Test-Path $src) -and -not $Silent) { Write-Log "Prompting for Firefox file" 'INFO'; $tmp = Select-FileDialog -Filter 'Firefox places.sqlite|places.sqlite'; if ($tmp) { $src = $tmp; Write-Log "User selected Firefox import file: $src" } }
+                $suffix = if ($AllProfiles) { "-$($pr.Name -replace '\s','_')" } else { '' }
+                $src = Find-BookmarkImportSource -Path $Path -Browser 'Firefox' -Extension '.sqlite' -LegacyBase 'Firefox-places' -ProfileSuffix $suffix -ProfileName $(if ($AllProfiles) { $pr.Name })
+                if (-not $src) { $src = Join-Path $Path "Firefox$suffix`_BookmarkData_*.sqlite" }
+                if (!(Test-Path -LiteralPath $src) -and -not $Silent) { Write-Log "Prompting for Firefox file" 'INFO'; $tmp = Select-FileDialog -Filter 'Firefox bookmark database (*.sqlite)|*.sqlite'; if ($tmp) { $src = $tmp; Write-Log "User selected Firefox import file: $src" } }
                 _CopyIn -Src $src -Dst $dst -Label 'Firefox'
             }
         } else { Write-Log 'Firefox profile(s) not found' 'WARN' }
@@ -1018,7 +1309,7 @@ function Show-ProgressDialog {
 function Show-GUI {
     Write-Log 'Launching GUI mode'
     $form = New-Object Windows.Forms.Form
-    $form.Text = 'Bookmark Backup Tool v5.2 - Enhanced Edition'; $form.Size = '600,480'; $form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false
+    $form.Text = "Bookmark Backup Tool v$script:ToolVersion - Enhanced Edition"; $form.Size = '600,480'; $form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false
 
     $chkChrome  = New-Object Windows.Forms.CheckBox; $chkChrome.Text='Chrome';  $chkChrome.Location='30,30';  $chkChrome.AutoSize=$true; $form.Controls.Add($chkChrome)
     $chkEdge    = New-Object Windows.Forms.CheckBox; $chkEdge.Text='Edge';      $chkEdge.Location='30,60';  $chkEdge.AutoSize=$true; $form.Controls.Add($chkEdge)
@@ -1102,7 +1393,7 @@ function New-BookmarkScheduledTask {
         $taskName = 'BookmarkBackupTool_AutoExport'
         $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         if ($existing) { Write-Log "Scheduled task exists: $taskName"; Unregister-ScheduledTask -TaskName $taskName -Confirm:$false; Write-Log "Removed existing scheduled task: $taskName" }
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Automatic bookmark backup using BookmarkTool v5.0' | Out-Null
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description "Automatic bookmark backup using BookmarkTool v$script:ToolVersion" | Out-Null
         Write-Log "Successfully created scheduled task: $taskName"; Write-Log "Frequency: $Frequency at $Time"; Write-Information "[SUCCESS] Scheduled task created. Next Run: $($trigger.StartBoundary)"; $true
     } catch { Write-Error "Failed to create scheduled task: $_"; Write-Log "ERROR: Failed to create scheduled task - $_" 'ERROR'; $false }
 }
@@ -1114,7 +1405,7 @@ function Remove-BookmarkScheduledTask { try { $name='BookmarkBackupTool_AutoExpo
 # =====================================================================================
 if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.\s') {
     Invoke-LogRetention
-    Write-Log '=== Bookmark Backup Tool v5.0 Enhanced Edition Started ==='
+    Write-Log "=== Bookmark Backup Tool v$script:ToolVersion Enhanced Edition Started ==="
     Write-Log "PowerShell Version: $($PSVersionTable.PSVersion)"
     $execMode = 'GUI'
 if ($CreateScheduledTask) { $execMode = 'Scheduled Task Creation' }
@@ -1158,13 +1449,13 @@ Write-Log ("Execution mode: {0}" -f $execMode)
                     Write-Log "Silent export: Chrome=$Chrome Edge=$Edge Firefox=$Firefox HtmlOnly=$HtmlOnly; Path=$finalPath"
                     if ($PSCmdlet.ShouldProcess($finalPath,'Export bookmarks')) { Export-Bookmarks -Path $finalPath -Chrome:$Chrome -Edge:$Edge -Firefox:$Firefox -ExportHtmlOnly:$HtmlOnly }
                     $summary = New-OperationSummary -Operations $script:OperationResults -StartTime $operationStart -OperationType 'Export'
-                    Write-Log $summary; Write-Information $summary
+                    Write-Log $summary
                 }
                 'Import' {
                     Write-Log "Silent import: Chrome=$Chrome Edge=$Edge Firefox=$Firefox; Path=$finalPath"
                     if ($PSCmdlet.ShouldProcess($finalPath,'Import bookmarks')) { Import-Bookmarks -Path $finalPath -Chrome:$Chrome -Edge:$Edge -Firefox:$Firefox }
                     $summary = New-OperationSummary -Operations $script:OperationResults -StartTime $operationStart -OperationType 'Import'
-                    Write-Log $summary; Write-Information $summary
+                    Write-Log $summary
                 }
                 default { throw "When using -Silent, -Action must be 'Export' or 'Import'." }
             }

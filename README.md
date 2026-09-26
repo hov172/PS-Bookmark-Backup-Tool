@@ -1,4 +1,4 @@
-# 📑 Bookmark Backup Tool v5.2.1 
+# 📑 Bookmark Backup Tool v5.4
   ## PowerShell Enhanced Edition
 
 PowerShell tool that lets you **export and import bookmarks** for **Google Chrome**, **Microsoft Edge**, and **Mozilla Firefox**.  
@@ -18,6 +18,22 @@ It's designed to be **robust in enterprise environments** (network paths, permis
 ---
 
 ## 📝 Changelog
+
+**v5.4 — September 26, 2026** (reliability release)
+
+- 🦊 **Firefox backups are complete**: changes Firefox hasn't saved yet (`places.sqlite-wal`) are merged into the backup, even while Firefox is open. Every Firefox backup is a single standalone `.sqlite` file, including on network shares.
+- 🦊 **Right Firefox profile**: uses the profile Firefox actually launches (`[Install…] Default=` in `profiles.ini`), then `Default=1`, then the most recently used profile with bookmarks
+- 📥 **Import finds this tool's exports**: picks the newest `*_BookmarkData_<timestamp>` file in the folder or ZIP (older `Chrome-Bookmarks.json` / `Firefox-places.sqlite` names still work)
+- 🛡️ **Import validates before overwriting**: bad, truncated or wrong-browser files are skipped and the profile is left unchanged; Firefox files are fully checked (`quick_check`, bookmark tables and root folders)
+- 🦊 **Safe Firefox restores**: leftover `places.sqlite-wal`/`-shm` files are removed so they can't undo or corrupt the import
+- 👥 **`-AllProfiles` import** only uses each profile's own export, so no profile is overwritten with another profile's bookmarks
+- 📄 **HTML export rebuilt**: keeps the folder structure, escapes special characters, writes dates in seconds, and marks the toolbar folder so browsers import it back to the toolbar
+- 🌐 **Silent mode without `-TargetPath` fixed**: it previously never finished. The share check is also faster and reliable on PowerShell 5.1; `HOMESHARE` unset goes straight to the Desktop; the Desktop follows OneDrive redirection
+- ⚙️ **`DefaultPath` and `PreferNetworkPath` config settings now work**
+- 🗂️ **Pre-import backups**: rotation keeps the newest 10 by timestamp (it could previously delete the newest first)
+- 🧰 A logged error no longer stops the whole run; each ZIP holds only that run's files; the summary prints once
+- 🏷️ `-AllProfiles` file names use underscores for spaces (`Chrome-Default_Profile_…`); older names still import
+- 🪟 Runs in Windows PowerShell 5.1 again (the script file is now saved as UTF-8 with BOM)
 
 **v5.2 — December 10, 2025**
 
@@ -81,7 +97,7 @@ It's designed to be **robust in enterprise environments** (network paths, permis
 
 ## 🧭 Overview
 
-**Bookmark Backup Tool v5.2** is a PowerShell module that lets you export and import bookmarks for **Google Chrome**, **Microsoft Edge**, and **Mozilla Firefox**.  
+**Bookmark Backup Tool v5.4** is a PowerShell module that lets you export and import bookmarks for **Google Chrome**, **Microsoft Edge**, and **Mozilla Firefox**.  
 It supports **GUI** for interactive use and **CLI** for automation, offers **scheduled backups**, **multi-profile handling**, **HTML conversion**, **ZIP archives**, **browser auto-close**, **file integrity checks**, and **comprehensive logging**.  
 It's built to work smoothly in both **enterprise** and **home** environments.
 
@@ -96,9 +112,10 @@ It's built to work smoothly in both **enterprise** and **home** environments.
 - **ZIP archive support**: Bundle all bookmarks into compressed archives
 - **Browser auto-close**: Automatically closes browsers when needed for safe imports
 - **Multi-profile support**: Export/import all browser profiles or just the latest
-- **Automatic path detection** with network share preference and Desktop fallback
+- **Automatic path detection**: config `DefaultPath`, then network share (`HOMESHARE`), then Desktop
 - **Automatic backup** before imports (maintains up to 10 rolling backups)
-- **File integrity verification** for JSON and SQLite files
+- **File validation before import**: JSON structure for Chrome/Edge; full database check for Firefox
+- **Complete Firefox backups** while Firefox is open (unsaved changes merged in)
 - **Task Scheduler integration** (Daily/Weekly/Monthly)
 - **Configuration file support** with sensible defaults
 - **Verbose logging** with retention policy
@@ -178,8 +195,18 @@ Export bookmarks in **universal HTML format** (Netscape Bookmark format) that wo
 - `Chrome-Default_Profile_BookmarkData_2025-12-10_14-30-00.json`
 - `Chrome-Profile_1_Bookmarks_2025-12-10_14-30-00.html`
 
+Spaces in profile names become underscores. Exports made before v5.4 kept the spaces (`Chrome-Profile 1_…`); import still finds those.
+
 **ZIP Archive:**
-- `BookmarkBackup_2025-12-10_14-30-00.zip`
+- `BookmarkBackup_2025-12-10_14-30-00.zip` (contains only the files from that export run)
+
+**Which file import uses:** point import at a folder (or ZIP). For each browser it picks, in order:
+1. With `-AllProfiles`: that profile's own newest export (`Chrome-Profile_1_BookmarkData_*.json`). If a profile has none, it is **skipped**, never given another profile's file.
+2. The newest `<Browser>_BookmarkData_<timestamp>` export ("newest" = the timestamp in the file name)
+3. The older fixed names: `Chrome-Bookmarks.json`, `Edge-Bookmarks.json`, `Firefox-places.sqlite`
+4. As a last resort (not with `-AllProfiles`), any `<Browser>*_BookmarkData_*` file, e.g. from the desktop app
+
+HTML files are never imported; they are for opening in, or importing into, a browser.
 
 ---
 
@@ -409,8 +436,8 @@ Import-Bookmarks -Chrome -Edge -CloseBrowserIfRunning -TargetPath "C:\Backups"
 # Force import without confirmations
 Import-Bookmarks -Firefox -Force -TargetPath "C:\Backups"
 
-# Import from specific files
-Import-Bookmarks -Chrome -TargetPath "C:\Backups\Chrome-Bookmarks.json"
+# Import from a folder of exports (the newest Chrome_BookmarkData_*.json is used)
+Import-Bookmarks -Chrome -TargetPath "C:\Backups"
 ```
 
 #### Combined Operations
@@ -462,15 +489,17 @@ Version 5.2 introduces **dual-format export** capability, creating both native b
 
 **Chrome/Edge (JSON → HTML):**
 - Reads Chrome's JSON bookmark structure
-- Parses bookmark bar and other folders
-- Converts to hierarchical HTML
-- Preserves folder structure and URLs
+- Converts the bookmarks bar (marked as the toolbar), Other bookmarks and, if not empty, Mobile bookmarks
+- Preserves nested folders, titles and URLs
+- Dates converted from Chrome's format to standard Unix seconds
 
 **Firefox (SQLite → HTML):**
-- Queries `places.sqlite` database
-- Extracts bookmarks via SQL
-- Converts to HTML format
+- Reads the full bookmark tree from `places.sqlite`, including changes Firefox hasn't saved yet
+- Same layout as Firefox's own HTML export: Bookmarks Menu items at the top level, then Bookmarks Toolbar, Other Bookmarks and Mobile Bookmarks folders
+- Preserves nested folders and separators; tags are left out (they are not bookmarks)
 - Requires System.Data.SQLite (auto-downloads if missing)
+
+**Both:** titles and URLs are HTML-escaped, so characters like `&`, `<` and `"` can't break the file.
 
 ### Export Modes
 
@@ -507,16 +536,18 @@ Export-Bookmarks -Chrome -Edge -Firefox -HtmlOnly -TargetPath "C:\Backups"
 <TITLE>Bookmarks</TITLE>
 <H1>Bookmarks</H1>
 <DL><p>
-    <DT><H3>Bookmarks Bar</H3>
+    <DT><H3 ADD_DATE="1701234567" PERSONAL_TOOLBAR_FOLDER="true">Bookmarks bar</H3>
     <DL><p>
-        <DT><A HREF="https://example.com" ADD_DATE="1701234567">Example Site</A>
-        <DT><H3>Work</H3>
+        <DT><A HREF="https://example.com/?a=1&amp;b=2" ADD_DATE="1701234567">Tom &amp; Jerry</A>
+        <DT><H3 ADD_DATE="1701234567">Work</H3>
         <DL><p>
             <DT><A HREF="https://work.example.com">Work Site</A>
         </DL><p>
     </DL><p>
 </DL><p>
 ```
+
+`ADD_DATE`/`LAST_MODIFIED` are Unix time in seconds; `PERSONAL_TOOLBAR_FOLDER` tells browsers to import that folder into the toolbar.
 
 ### SQLite Auto-Install
 
@@ -790,20 +821,20 @@ Export-Bookmarks -Chrome -ConfigPath "C:\MyConfig\bookmarks.json"
 
 | Setting                    | Type    | Default | Description                                          |
 |----------------------------|---------|---------|------------------------------------------------------|
-| `DefaultPath`              | String  | ""      | Default export/import path (empty = auto-detect)     |
-| `PreferNetworkPath`        | Boolean | true    | Try network path (HOMESHARE) before Desktop          |
+| `DefaultPath`              | String  | ""      | Folder used when no `-TargetPath` is given (created if missing; `%VARS%` expanded). Empty = auto-detect. Also where the silent-mode log goes. |
+| `PreferNetworkPath`        | Boolean | true    | Try the network share (`HOMESHARE`) before the Desktop. `false` = always Desktop |
 | `DefaultBrowsers`          | Array   | Chrome, Edge | Browsers to include when none specified         |
 | `AutoBackupBeforeImport`   | Boolean | true    | Create backup before importing (maintains 10 copies) |
-| `VerifyFileIntegrity`      | Boolean | true    | Validate JSON/SQLite structure before operations     |
-| `NetworkTimeoutSeconds`    | Integer | 3       | Timeout for network path checks                      |
-| `MaxRetryAttempts`         | Integer | 3       | Number of retry attempts for failed operations       |
-| `RetryDelaySeconds`        | Integer | 1       | Delay between retry attempts                         |
-| `DetailedLogging`          | Boolean | true    | Enable verbose logging                               |
+| `VerifyFileIntegrity`      | Boolean | true    | Validate the file before import; invalid files are skipped and the profile is left unchanged |
+| `NetworkTimeoutSeconds`    | Integer | 3       | Timeout for each network share check                 |
+| `MaxRetryAttempts`         | Integer | 3       | Attempts for the network share check                 |
+| `RetryDelaySeconds`        | Integer | 1       | Delay before the first retry (doubles each retry)    |
 | `LogRetentionDays`         | Integer | 30      | Days to keep log files                               |
-| `ShowProgressIndicator`    | Boolean | true    | Display progress during operations                   |
-| `ConfirmOperations`        | Boolean | true    | Prompt for confirmation (respects -Force)            |
-| `CreateBackupOnExport`     | Boolean | false   | Create backup during export operations               |
-| `CompressBackups`          | Boolean | false   | Compress backup files (separate from -CreateZip)     |
+| `DetailedLogging`          | Boolean | true    | *Reserved - not used yet* (use `-Verbose`)           |
+| `ShowProgressIndicator`    | Boolean | true    | *Reserved - not used yet*                            |
+| `ConfirmOperations`        | Boolean | true    | *Reserved - not used yet*                            |
+| `CreateBackupOnExport`     | Boolean | false   | *Reserved - not used yet*                            |
+| `CompressBackups`          | Boolean | false   | *Reserved - not used yet* (use `-CreateZip`)         |
 
 ### Viewing/Modifying Configuration
 
@@ -840,20 +871,21 @@ Set-BookmarkConfiguration -AutoBackupBeforeImport $false -LogRetentionDays 60
 
 3. **Path Resolution**
    - Use `-TargetPath` if specified
-   - Otherwise, try network path (HOMESHARE)
-   - Fallback to Desktop if network unavailable
+   - Otherwise the config `DefaultPath`, if set and usable
+   - Otherwise the network share (`HOMESHARE`), unless `PreferNetworkPath` is `false`
+   - Fallback to the Desktop (Windows' real Desktop, including OneDrive redirection)
    - Create directory if needed
 
 4. **Export Operation**
    - Copy native bookmark files (JSON/SQLite)
-   - Convert to HTML format (unless `-HtmlOnly`)
+   - Firefox: also merge `places.sqlite-wal` (changes not yet saved by Firefox) into the copy, producing one standalone `.sqlite` file
+   - Also write HTML (with `-HtmlOnly`, only HTML)
    - Apply timestamp to filenames
    - Log all operations
 
 5. **ZIP Creation** (if `-CreateZip`)
-   - Bundle all exported files
+   - Bundle the files from this export run (older exports in the folder are left out)
    - Create timestamped ZIP archive
-   - Verify archive integrity
 
 ### Import Process
 
@@ -862,24 +894,25 @@ Set-BookmarkConfiguration -AutoBackupBeforeImport $false -LogRetentionDays 60
    - Prompt or auto-close (based on mode/flags)
    - Wait for processes to fully terminate (2s delay)
 
-2. **Backup Creation** (if `AutoBackupBeforeImport`)
-   - Create timestamped backup of existing bookmarks
-   - Store in `<Profile>\BookmarkTool_Backups`
-   - Maintain rolling 10-backup limit
-
-3. **File Selection**
+2. **File Selection**
    - Use `-TargetPath` if specified
    - Detect ZIP archives and extract
-   - Auto-detect browser files by naming pattern
-   - Prompt for file selection (GUI mode)
+   - Pick each browser's file as described in [Which file import uses](#exported-file-naming-convention)
+   - Prompt for file selection if nothing is found (interactive mode only)
 
-4. **Integrity Validation** (if `VerifyFileIntegrity`)
-   - **Chrome/Edge**: Validate JSON structure (`roots`, `version`, `bookmark_bar`)
-   - **Firefox**: Verify SQLite header and database structure
+3. **Validation** (if `VerifyFileIntegrity`, on by default)
+   - **Chrome/Edge**: valid JSON with `roots` and `version` (Chrome also `bookmark_bar`)
+   - **Firefox**: SQLite header, `PRAGMA quick_check`, the `moz_bookmarks`/`moz_places` tables and all four root folders (checked on a temporary copy)
+   - An invalid file is **skipped**: that browser's profile is left unchanged and the other browsers still import
+
+4. **Backup Creation** (if `AutoBackupBeforeImport`)
+   - Create timestamped backup of existing bookmarks (Firefox: including unsaved changes, as one standalone file)
+   - Store in `<Profile>\BookmarkTool_Backups`
+   - Keep the newest 10, judged by the timestamp in the file name
 
 5. **Import Operation**
+   - Firefox: remove leftover `places.sqlite-wal`/`-shm` first (their contents are in the backup), so they can't undo or corrupt the import
    - Copy validated files to profile directories
-   - Replace existing bookmark files
    - Log success/failure for each browser
 
 6. **Post-Import**
@@ -896,45 +929,48 @@ Set-BookmarkConfiguration -AutoBackupBeforeImport $false -LogRetentionDays 60
 - Sort by `LastWriteTime` to identify latest
 
 **Firefox:**
-- Read `%APPDATA%\Mozilla\Firefox\profiles.ini`
-- Parse `Path=` and `IsRelative=` entries
-- Resolve to absolute profile path
-- Verify `places.sqlite` exists
-- Fallback: Search all profile directories
+- Read `%APPDATA%\Mozilla\Firefox\profiles.ini` section by section
+- Resolve each profile's `Path=` (relative to the Firefox folder when `IsRelative=1`, otherwise absolute)
+- Only profiles that contain `places.sqlite` are considered. Preference:
+  1. The profile an installed Firefox launches (`[Install…]` → `Default=`)
+  2. The profile marked `Default=1`
+  3. The most recently used profile
+- `-AllProfiles` includes every profile under `Profiles\` plus any listed in `profiles.ini` at custom locations
 
 ### Network Path Detection
 
-1. Check `HOMESHARE` environment variable
+Used when no `-TargetPath` or `DefaultPath` is set, and `PreferNetworkPath` is not `false`.
+
+1. Check `HOMESHARE` environment variable (not set → Desktop immediately)
 2. Verify it's a UNC path (`\\server\share`)
-3. Test accessibility with timeout (3s)
-4. Create test file to verify write permissions
+3. Check it on a background thread with a timeout (`NetworkTimeoutSeconds`, default 3s)
+4. Create and delete a test file to verify write permissions
 5. If successful, use network path
-6. If failed, retry (up to 3 attempts with exponential backoff)
+6. If failed, retry (up to `MaxRetryAttempts`, default 3, with exponential backoff)
 7. Finally, fallback to Desktop
+
+The result is worked out once per run and reused (including for the log file location).
 
 ### HTML Conversion
 
 **Chrome/Edge:**
 ```
-JSON → Parse → Extract bookmark_bar/other folders → 
-Recursive folder traversal → Generate HTML structure → 
-Write Netscape Bookmark format
+JSON → Parse → bookmark_bar (toolbar) / other / synced roots →
+Recursive folder traversal → Escape titles/URLs, dates to seconds →
+Write Netscape Bookmark format (UTF-8)
 ```
 
 **Firefox:**
 ```
-SQLite → Open connection → Query moz_bookmarks + moz_places → 
-Join tables → Extract URLs/titles → Generate HTML → 
-Write Netscape Bookmark format
+places.sqlite (+ -wal) → Local temp copy, WAL merged → Load full moz_bookmarks tree + URLs →
+Menu items, then Toolbar / Other / Mobile folders (tags skipped) →
+Escape titles/URLs, dates to seconds → Write Netscape Bookmark format (UTF-8)
 ```
 
 ### Retry Logic
 
 Operations that support retry:
 - Network path access
-- File copy operations
-- Browser process termination
-- ZIP extraction
 
 Retry strategy:
 - Initial delay: 1 second (configurable)
@@ -1100,11 +1136,11 @@ Export-Bookmarks -Chrome -TargetPath "C:\MyBackups"
 
 **Symptom:**
 ```
-⚠ System.Data.SQLite not available - Firefox HTML conversion will be disabled
+⚠ System.Data.SQLite not available - Firefox HTML conversion, WAL merge and deep import validation will be disabled
 Firefox bookmarks exported as SQLite database successfully
 ```
 
-**This is NOT an error** - Firefox SQLite export still works!
+**This is NOT an error** - Firefox SQLite export still works! But changes Firefox hasn't saved yet are kept as a separate `…sqlite-wal` file next to the backup instead of being merged in, and import only checks the file header.
 
 **To enable Firefox HTML conversion:**
 
@@ -1392,7 +1428,7 @@ A: Typical sizes:
 - ZIP archive: 50% smaller than combined files
 
 **Q: Can I export bookmarks while the browser is running?**  
-A: **Yes for exports, no for imports.** Exports can run while browser is open. Imports require browser to be closed.
+A: **Yes for exports, no for imports.** Exports can run while browser is open. For Firefox, the export also picks up changes Firefox hasn't written to `places.sqlite` yet (they live in `places.sqlite-wal`). Imports require browser to be closed.
 
 **Q: What happens if I export with `-AllProfiles`?**  
 A: Creates separate files for each profile:
@@ -1784,8 +1820,8 @@ Remove-Item "$env:USERPROFILE\BookmarkTool.log" -Force
 
 **10. UNC Path Limitations**
 - **Limitation**: SQLite cannot open databases on UNC paths
-- **Impact**: Firefox HTML conversion may fail on network shares
-- **Workaround**: Tool automatically copies to temp location
+- **Impact**: None in normal use - Firefox HTML conversion, WAL merging and import validation all work on a local temp copy, so exports to network shares are complete
+- **Workaround**: Not needed (automatic)
 
 ---
 
@@ -1816,9 +1852,9 @@ Remove-Item "$env:USERPROFILE\BookmarkTool.log" -Force
 - **Workaround**: Use `-TargetPath` to specify custom profiles
 
 **15. Firefox Profile Selection**
-- **Limitation**: Detects primary profile from `profiles.ini`
-- **Impact**: May not detect all profiles if `profiles.ini` is corrupted
-- **Workaround**: Use `-AllProfiles` or manually specify profile path
+- **Limitation**: Without `-AllProfiles`, one profile is used: the one Firefox launches, per `profiles.ini`
+- **Impact**: If `profiles.ini` is missing or corrupted, the most recently used profile with bookmarks is used instead
+- **Workaround**: Use `-AllProfiles` to back up every profile
 
 **16. Browser Version Compatibility**
 - **Limitation**: Tested with Chrome 100+, Edge 100+, Firefox 100+
@@ -1865,16 +1901,16 @@ Remove-Item "$env:USERPROFILE\BookmarkTool.log" -Force
 ### File Format Limitations
 
 **21. HTML Format Fidelity**
-- **Limitation**: HTML export doesn't preserve all metadata:
-  - Chrome: Missing favicons, date modified
-  - Firefox: Missing tags, keywords, container assignments
+- **Limitation**: HTML export keeps folders, titles, URLs, dates and separators, but not all metadata:
+  - Chrome/Edge: no favicons
+  - Firefox: no favicons, tags, keywords or container assignments
 - **Impact**: Some bookmark metadata lost in HTML format
 - **Workaround**: Use native format (JSON/SQLite) for complete backups
 
 **22. ZIP Compression Ratio**
-- **Limitation**: Text files (JSON/HTML) compress well (~50%), SQLite databases less so (~10-20%)
-- **Impact**: Firefox ZIP archives are large
-- **Workaround**: Use external compression tools for better ratios
+- **Limitation**: None significant - Firefox databases are mostly empty pages and compress very well (a 5 MB `places.sqlite` is typically well under 1 MB zipped)
+- **Impact**: Uncompressed Firefox exports (without `-CreateZip`) take about 5 MB each
+- **Workaround**: Use `-CreateZip` for long-term or scheduled backups
 
 **23. File Size Limits**
 - **Limitation**: No built-in file size limits
@@ -1895,9 +1931,9 @@ Remove-Item "$env:USERPROFILE\BookmarkTool.log" -Force
 - **Impact**: Requires execution policy adjustment
 - **Workaround**: Sign script for enterprise deployment
 
-**26. No File Integrity Verification**
-- **Limitation**: No cryptographic hash verification of backups
-- **Impact**: Cannot detect corrupted or tampered files
+**26. No Cryptographic Verification**
+- **Limitation**: Import checks that a file is a valid, healthy bookmark file, but backups carry no hash or signature
+- **Impact**: A deliberately altered but well-formed file would still be imported
 - **Workaround**: Use `Get-FileHash` manually
 
 ---
@@ -2095,9 +2131,9 @@ SOFTWARE.
 
 **Author:** Jesus M. Ayala
 
-**Version:** 5.2 Enhanced Edition
+**Version:** 5.4 Enhanced Edition
 
-**Last Updated:** December 10, 2025
+**Last Updated:** September 26, 2026
 
 **GitHub Repositories:**
 - 💻 [MacOS Bookmarks Backup Tool](https://github.com/hov172/MacOS-Bookmarks-Backup-Tool)
