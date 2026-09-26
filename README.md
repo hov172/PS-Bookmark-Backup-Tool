@@ -34,6 +34,8 @@ It's designed to be **robust in enterprise environments** (network paths, permis
 - 🧰 A logged error no longer stops the whole run; each ZIP holds only that run's files; the summary prints once
 - 🏷️ `-AllProfiles` file names use underscores for spaces (`Chrome-Default_Profile_…`); older names still import
 - 🪟 Runs in Windows PowerShell 5.1 again (the script file is now saved as UTF-8 with BOM)
+- 📦 **Module v5.4.0**: the PowerShell Gallery module is now generated from this script (so both always match) and exports the commands this README documents - `Get-/Set-BookmarkConfiguration`, `Get-HomeSharePath`, `Test-BrowserInstalled`, `Test-BrowserRunning`, `Get-BrowserProfiles`, `Test-BookmarkPrerequisites`, `Test-BookmarkFileIntegrity` - plus `Invoke-BookmarkBackupTool`
+- 🔁 `-WhatIf` previews still write the log file; the script's main logic is now the `Invoke-BookmarkBackupTool` function (same parameters and exit codes)
 
 **v5.2 — December 10, 2025**
 
@@ -212,7 +214,7 @@ HTML files are never imported; they are for opening in, or importing into, a bro
 
 ## 📦 Installation (PowerShell Gallery)
 
-👉 [PowerShell Gallery Package](https://www.powershellgallery.com/packages/BookmarkBackupTool/5.2.0)
+👉 [PowerShell Gallery Package](https://www.powershellgallery.com/packages/BookmarkBackupTool)
 
 ```powershell
 # Install for current user
@@ -243,28 +245,27 @@ Uninstall-Module -Name BookmarkBackupTool
 
 | Command                         | Description                                                           |
 |----------------------------------|-----------------------------------------------------------------------|
-| `Export-Bookmarks`              | Exports bookmarks from supported browsers to backup files (JSON/SQLite + HTML). |
-| `Import-Bookmarks`              | Imports bookmarks from backup files or ZIP archives.                  |
-| `Get-HomeSharePath`            | Returns the user's home or shared folder path with network fallback.  |
-| `Test-BrowserInstalled`        | Checks if a supported browser is installed on the system.             |
-| `Test-BrowserRunning`          | Checks if a browser is currently running (multi-process detection).   |
-| `Close-Browser`                | Gracefully closes a browser with force-kill fallback.                 |
-| `Get-BrowserProfiles`          | Lists all available browser profiles with last-used timestamps.       |
-| `Get-AllBrowserProfiles`       | Gets detailed profile information for multi-profile operations.       |
-| `Backup-ExistingBookmarks`     | Creates a timestamped snapshot of current bookmarks (maintains 10 rolling backups). |
-| `ConvertTo-ChromeHtml`         | Converts Chrome JSON bookmarks to Netscape HTML format.               |
-| `ConvertTo-FirefoxHtml`        | Converts Firefox SQLite database to Netscape HTML format.             |
-| `New-ZipArchive`               | Creates a ZIP archive from exported bookmark files.                   |
-| `Expand-ZipArchive`            | Extracts bookmark files from ZIP archives.                            |
-| `Import-FromZip`               | Imports bookmarks directly from ZIP archives with auto-detection.     |
-| `Show-BookmarkGUI`             | Launches the graphical user interface (v5.2 with new checkboxes).    |
-| `New-BookmarkScheduledTask`    | Creates a Windows scheduled task for automated backups.               |
-| `Remove-BookmarkScheduledTask` | Removes the scheduled backup task from Task Scheduler.                |
-| `Get-BookmarkConfiguration`    | Displays current configuration settings.                              |
-| `Set-BookmarkConfiguration`    | Updates configuration file with new settings.                         |
-| `Test-BookmarkPrerequisites`   | Checks environment readiness (PowerShell version, .NET, permissions). |
-| `Test-BookmarkFileIntegrity`   | Validates bookmark file structure (JSON/SQLite format checks).        |
-| `Install-SQLiteIfMissing`      | Auto-downloads and installs System.Data.SQLite from NuGet.            |
+| `Invoke-BookmarkBackupTool`     | Runs the tool like the script does: `-Silent -Action Export/Import`, GUI, or `-CreateScheduledTask`. |
+| `Export-Bookmarks`              | Exports bookmarks to a folder (JSON/SQLite + HTML). `-AllProfiles`, `-CreateZip`, `-ExportHtmlOnly`. |
+| `Import-Bookmarks`              | Imports the newest export found in a folder (validated first). `-AllProfiles`, `-CloseBrowserIfRunning`. |
+| `Import-FromZip`                | Imports bookmarks directly from a ZIP archive with auto-detection.    |
+| `Show-GUI`                      | Launches the graphical user interface (alias `Show-BookmarkGUI`).     |
+| `New-BookmarkScheduledTask`     | Creates a Windows scheduled task for automated backups.               |
+| `Remove-BookmarkScheduledTask`  | Removes the scheduled backup task from Task Scheduler.                |
+| `Get-BookmarkConfiguration`     | Returns the current configuration settings.                           |
+| `Set-BookmarkConfiguration`     | Changes settings (e.g. `-DefaultPath`, `-LogRetentionDays`) and saves them. |
+| `Get-Configuration` / `Save-Configuration` | Lower-level read/write of a configuration file.            |
+| `Get-HomeSharePath`             | Returns the folder used when no path is given: `DefaultPath`, network share, or Desktop. |
+| `Test-BrowserInstalled`         | Checks if a supported browser has a profile on this computer.         |
+| `Test-BrowserRunning`           | Checks if a browser is currently running (multi-process detection).   |
+| `Get-BrowserProfiles`           | Lists the browser profile the tool uses, or all profiles with `-AllProfiles`. |
+| `Test-BookmarkPrerequisites`    | Checks environment readiness (PowerShell version, .NET, write access). |
+| `Test-BookmarkFileIntegrity`    | Validates a bookmark file (JSON structure / full Firefox database check). |
+| `Install-SQLiteIfMissing`       | Auto-downloads and installs System.Data.SQLite from NuGet.            |
+
+**Aliases:** `Export-BrowserBookmarks` and `Backup-Bookmarks` → `Export-Bookmarks`; `Import-BrowserBookmarks` and `Restore-Bookmarks` → `Import-Bookmarks`; `Show-BookmarkGUI` → `Show-GUI`.
+
+Internal helpers such as `Close-Browser`, `ConvertTo-ChromeHtml`, `ConvertTo-FirefoxHtml`, `Backup-ExistingBookmarks`, `New-ZipArchive` and `Expand-ZipArchive` are not exported by the module; they are available if you dot-source the script (`. .\BookMarkToolv5.ps1`).
 
 To list all commands:
 

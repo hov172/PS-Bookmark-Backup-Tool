@@ -221,6 +221,9 @@ if (-not $script:SQLiteAvailable) {
 # GLOBALS & CONFIG
 # =====================================================================================
 $script:ToolVersion = '5.4'
+# $true in the module built by Build-Module.ps1; $false when run as a script
+$script:IsModule = $false
+$script:ScriptPath = $PSCommandPath
 $script:Config = $null
 $script:HomeSharePathCache = $null
 $script:ResolvingHomeShare = $false
@@ -285,8 +288,9 @@ function Write-Log {
         $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fffK')
         $line = "$timestamp [$Level] $Message"
         $dir = Split-Path $logFile -Parent
-        if (!(Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $line | Out-File -FilePath $logFile -Append -Encoding UTF8
+        # -WhatIf:$false: the log is always written, even during a -WhatIf preview
+        if (!(Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force -WhatIf:$false | Out-Null }
+        $line | Out-File -FilePath $logFile -Append -Encoding UTF8 -WhatIf:$false
     }
     switch ($Level) { 'INFO' { Write-Information $Message -InformationAction Continue } 'WARN' { Write-Warning $Message } 'ERROR' { Write-Error $Message -ErrorAction Continue } 'DEBUG' { Write-Verbose $Message } }
 }
@@ -305,7 +309,7 @@ function Test-Prerequisites {
             if (!(Test-Path $TargetPath -IsValid)) { $issues += "Invalid target path format: $TargetPath" }
             if (Test-Path $TargetPath) {
                 $testFile = Join-Path $TargetPath "_bmtool_permission_test.tmp"
-                try { New-Item -Path $testFile -ItemType File -Force | Out-Null; Remove-Item -Path $testFile -Force | Out-Null }
+                try { New-Item -Path $testFile -ItemType File -Force -WhatIf:$false | Out-Null; Remove-Item -Path $testFile -Force -WhatIf:$false | Out-Null }
                 catch { $issues += "No write permission to target path: $TargetPath" }
             }
         } catch { $issues += "Cannot access target path: $TargetPath - $_" }
@@ -321,7 +325,7 @@ function Test-PathAccess {
         if (!(Test-Path -LiteralPath $Path)) { Write-Verbose "Path does not exist: $Path"; return $false }
         if ($RequireWrite) {
             $testFile = Join-Path $Path "_bmtool_write_test_$(Get-Random).tmp"
-            try { New-Item -Path $testFile -ItemType File -Force | Out-Null; Remove-Item -Path $testFile -Force | Out-Null; Write-Verbose "Write access confirmed: $Path" } catch { Write-Verbose "No write access: $Path"; return $false }
+            try { New-Item -Path $testFile -ItemType File -Force -WhatIf:$false | Out-Null; Remove-Item -Path $testFile -Force -WhatIf:$false | Out-Null; Write-Verbose "Write access confirmed: $Path" } catch { Write-Verbose "No write access: $Path"; return $false }
         }
         return $true
     } catch { Write-Verbose "Failed to access ${Path}: $_"; $false }
@@ -404,9 +408,10 @@ function Resolve-HomeSharePath {
 # =====================================================================================
 # BROWSER DETECTION & PROFILES
 # =====================================================================================
-function Test-BrowserRunning { param([string]$Browser)
+function Test-BrowserRunning { param([Alias('BrowserName')][string]$Browser)
     $processMap = @{ 'chrome'=@('chrome','GoogleChromeHelper','Google Chrome Helper','Google Chrome Helper (Renderer)','Google Chrome Helper (GPU)','Google Chrome Helper (Plugin)','crashpad_handler'); 'msedge'=@('msedge','MicrosoftEdge','MicrosoftEdgeWebView2','msedgewebview2','MicrosoftEdgeCP','MicrosoftEdgeSH','identity_helper'); 'firefox'=@('firefox','plugin-container','firefox.exe','crashreporter','updater','maintenanceservice') }
-    $key = $Browser.ToLower(); if (-not $processMap.ContainsKey($key)) { Write-Warning "Unknown browser: $Browser"; return $false }
+    $key = $Browser.ToLower(); if ($key -eq 'edge') { $key = 'msedge' }
+    if (-not $processMap.ContainsKey($key)) { Write-Warning "Unknown browser: $Browser"; return $false }
     $found = @(); foreach ($n in $processMap[$key]) { $p = Get-Process -Name $n -ErrorAction SilentlyContinue; if ($p) { $found += $p; Write-Verbose "Found running: $n (PID: $($p.Id -join ', '))" } }
     if ($found.Count -gt 0) { Write-Verbose "$Browser running with $($found.Count) related processes"; return $true } else { Write-Verbose "$Browser not running"; return $false }
 }
@@ -942,7 +947,9 @@ function Export-Bookmarks {
         [switch]$Chrome,
         [switch]$Edge,
         [switch]$Firefox,
-        [switch]$ExportHtmlOnly
+        [switch]$ExportHtmlOnly,
+        [switch]$AllProfiles,
+        [switch]$CreateZip
     )
 
     if (!(Test-Path -LiteralPath $Path -PathType Container)) {
@@ -1105,7 +1112,7 @@ function Find-BookmarkImportSource {
 
 function Import-Bookmarks {
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][string]$Path,[switch]$Chrome,[switch]$Edge,[switch]$Firefox,[switch]$CloseBrowserIfRunning)
+    param([Parameter(Mandatory)][string]$Path,[switch]$Chrome,[switch]$Edge,[switch]$Firefox,[switch]$CloseBrowserIfRunning,[switch]$AllProfiles)
 
     # Check if browsers are running and offer to close them
     $browsersToClose = @()
@@ -1231,7 +1238,7 @@ function Import-Bookmarks {
 }
 
 function Import-FromZip {
-    param([Parameter(Mandatory)][string]$ZipPath,[string]$TargetBrowser)
+    param([Parameter(Mandatory)][string]$ZipPath,[string]$TargetBrowser,[switch]$AllProfiles)
     
     $tempExtractPath = Join-Path $env:TEMP "BookmarkImport_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
     
@@ -1254,22 +1261,22 @@ function Import-FromZip {
         # Import based on target browser or auto-detect
         if ($TargetBrowser -eq 'Chrome' -and $chromeFiles) {
             Write-Log "Importing Chrome bookmarks from ZIP"
-            Import-Bookmarks -Path $tempExtractPath -Chrome
+            Import-Bookmarks -Path $tempExtractPath -Chrome -AllProfiles:$AllProfiles
             $importSuccess = $true
         } elseif ($TargetBrowser -eq 'Edge' -and $edgeFiles) {
             Write-Log "Importing Edge bookmarks from ZIP"
-            Import-Bookmarks -Path $tempExtractPath -Edge
+            Import-Bookmarks -Path $tempExtractPath -Edge -AllProfiles:$AllProfiles
             $importSuccess = $true
         } elseif ($TargetBrowser -eq 'Firefox' -and $firefoxFiles) {
             Write-Log "Importing Firefox bookmarks from ZIP"
-            Import-Bookmarks -Path $tempExtractPath -Firefox
+            Import-Bookmarks -Path $tempExtractPath -Firefox -AllProfiles:$AllProfiles
             $importSuccess = $true
         } else {
             # Auto-detect and import all available
             Write-Log "Auto-detecting browsers in ZIP archive"
-            if ($chromeFiles) { Import-Bookmarks -Path $tempExtractPath -Chrome; $importSuccess = $true }
-            if ($edgeFiles) { Import-Bookmarks -Path $tempExtractPath -Edge; $importSuccess = $true }
-            if ($firefoxFiles) { Import-Bookmarks -Path $tempExtractPath -Firefox; $importSuccess = $true }
+            if ($chromeFiles) { Import-Bookmarks -Path $tempExtractPath -Chrome -AllProfiles:$AllProfiles; $importSuccess = $true }
+            if ($edgeFiles) { Import-Bookmarks -Path $tempExtractPath -Edge -AllProfiles:$AllProfiles; $importSuccess = $true }
+            if ($firefoxFiles) { Import-Bookmarks -Path $tempExtractPath -Firefox -AllProfiles:$AllProfiles; $importSuccess = $true }
         }
         
         return $importSuccess
@@ -1328,9 +1335,7 @@ function Show-GUI {
         Write-Log 'Export button clicked'
         $currentPath = if ($txtPath.Text) { $txtPath.Text } else { Get-HomeSharePath }
         $txtPath.Text = $currentPath
-        $script:AllProfiles = $chkAllProfiles.Checked
-        $script:CreateZip = $chkCreateZip.Checked
-        Export-Bookmarks -Path $currentPath -Chrome:$chkChrome.Checked -Edge:$chkEdge.Checked -Firefox:$chkFirefox.Checked -ExportHtmlOnly:$chkHtmlOnly.Checked
+        Export-Bookmarks -Path $currentPath -Chrome:$chkChrome.Checked -Edge:$chkEdge.Checked -Firefox:$chkFirefox.Checked -ExportHtmlOnly:$chkHtmlOnly.Checked -AllProfiles:$chkAllProfiles.Checked -CreateZip:$chkCreateZip.Checked
         [Windows.Forms.MessageBox]::Show('Export completed. Check the log for details.','Export Complete',[Windows.Forms.MessageBoxButtons]::OK,[Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         Write-Log 'Export completed via GUI'
     })
@@ -1341,8 +1346,7 @@ function Show-GUI {
         Write-Log 'Import button clicked'
         $currentPath = if ($txtPath.Text) { $txtPath.Text } else { Get-HomeSharePath }
         $txtPath.Text = $currentPath
-        $script:AllProfiles = $chkAllProfiles.Checked
-        Import-Bookmarks -Path $currentPath -Chrome:$chkChrome.Checked -Edge:$chkEdge.Checked -Firefox:$chkFirefox.Checked -CloseBrowserIfRunning
+        Import-Bookmarks -Path $currentPath -Chrome:$chkChrome.Checked -Edge:$chkEdge.Checked -Firefox:$chkFirefox.Checked -CloseBrowserIfRunning -AllProfiles:$chkAllProfiles.Checked
         [Windows.Forms.MessageBox]::Show('Import completed. Check the log for details.','Import Complete',[Windows.Forms.MessageBoxButtons]::OK,[Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         Write-Log 'Import completed via GUI'
     })
@@ -1401,37 +1405,136 @@ function New-BookmarkScheduledTask {
 function Remove-BookmarkScheduledTask { try { $name='BookmarkBackupTool_AutoExport'; if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $name -Confirm:$false; Write-Log "Removed scheduled task: $name"; $true } else { Write-Warning "Scheduled task not found: $name"; $false } } catch { Write-Error "Failed to remove scheduled task: $_"; Write-Log "ERROR: Failed to remove scheduled task - $_" 'ERROR'; $false } }
 
 # =====================================================================================
-# MAIN EXECUTION LOGIC
+# PUBLIC HELPER COMMANDS
+# (exported by the module; also usable after dot-sourcing the script: . .\BookMarkToolv5.ps1)
 # =====================================================================================
-if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.\s') {
+function Get-BookmarkConfiguration {
+    <# .SYNOPSIS Returns the current configuration (defaults merged with BookmarkTool.config.json). #>
+    [CmdletBinding()]
+    param([string]$ConfigFilePath)
+    if ($ConfigFilePath) { Get-Configuration -ConfigFilePath $ConfigFilePath } else { $script:Config }
+}
+
+function Set-BookmarkConfiguration {
+    <#
+    .SYNOPSIS Changes configuration settings and saves them to BookmarkTool.config.json.
+    .EXAMPLE Set-BookmarkConfiguration -AutoBackupBeforeImport $false -LogRetentionDays 60
+    .EXAMPLE $c = Get-BookmarkConfiguration; $c.DefaultPath = 'D:\Backups'; Set-BookmarkConfiguration -Configuration $c
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [hashtable]$Configuration,
+        [string]$DefaultPath,
+        [bool]$PreferNetworkPath,
+        [ValidateSet('Chrome','Edge','Firefox')][string[]]$DefaultBrowsers,
+        [bool]$AutoBackupBeforeImport,
+        [bool]$VerifyFileIntegrity,
+        [ValidateRange(1,300)][int]$NetworkTimeoutSeconds,
+        [ValidateRange(1,20)][int]$MaxRetryAttempts,
+        [ValidateRange(0,60)][int]$RetryDelaySeconds,
+        [ValidateRange(1,3650)][int]$LogRetentionDays,
+        [bool]$DetailedLogging,
+        [string]$ConfigFilePath
+    )
+    $cfg = if ($Configuration) { $Configuration.Clone() } else { $script:Config.Clone() }
+    foreach ($k in $PSBoundParameters.Keys) {
+        if ($k -in 'Configuration','ConfigFilePath','WhatIf','Confirm','Verbose','Debug','ErrorAction','WarningAction','InformationAction','ErrorVariable','WarningVariable','InformationVariable','OutVariable','OutBuffer','PipelineVariable') { continue }
+        $cfg[$k] = $PSBoundParameters[$k]
+    }
+    $target = if ($ConfigFilePath) { $ConfigFilePath } else { Join-Path $env:USERPROFILE 'BookmarkTool.config.json' }
+    if ($PSCmdlet.ShouldProcess($target, 'Save bookmark tool configuration')) {
+        if (Save-Configuration -Config $cfg -ConfigFilePath $target) { $script:Config = $cfg; $script:HomeSharePathCache = $null; $cfg }
+    }
+}
+
+function Test-BrowserInstalled {
+    <# .SYNOPSIS Returns $true if the browser has a user profile folder on this computer. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][Alias('Browser')][ValidateSet('Chrome','Edge','Firefox')][string]$BrowserName)
+    $dir = switch ($BrowserName) {
+        'Chrome'  { "$env:LOCALAPPDATA\Google\Chrome\User Data" }
+        'Edge'    { "$env:LOCALAPPDATA\Microsoft\Edge\User Data" }
+        'Firefox' { "$env:APPDATA\Mozilla\Firefox" }
+    }
+    Test-Path -LiteralPath $dir -PathType Container
+}
+
+function Get-BrowserProfiles {
+    <# .SYNOPSIS Lists browser profiles that contain bookmarks: the one the tool uses by default, or all with -AllProfiles. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][Alias('Browser')][ValidateSet('Chrome','Edge','Firefox')][string]$BrowserName, [switch]$AllProfiles)
+    $file = if ($BrowserName -eq 'Firefox') { 'places.sqlite' } else { 'Bookmarks' }
+    $paths = if ($AllProfiles) { @(Get-AllBrowserProfiles -Browser $BrowserName -FileName $file | ForEach-Object { $_.Path }) }
+             else { @(switch ($BrowserName) { 'Chrome' { Get-ChromeProfile } 'Edge' { Get-EdgeProfile } 'Firefox' { Get-FirefoxProfile } }) }
+    foreach ($p in $paths | Where-Object { $_ }) {
+        $item = Get-Item -LiteralPath $p
+        [pscustomobject]@{ Browser = $BrowserName; Name = $item.Name; FullName = $item.FullName; LastWriteTime = (Get-Item -LiteralPath (Join-Path $p $file)).LastWriteTime }
+    }
+}
+
+function Test-BookmarkPrerequisites {
+    <# .SYNOPSIS Checks PowerShell version, .NET assemblies and (optionally) write access to a target folder. #>
+    [CmdletBinding()]
+    param([string]$TargetPath)
+    Test-Prerequisites -TargetPath $TargetPath
+}
+
+# =====================================================================================
+# MAIN EXECUTION LOGIC
+# (a function, so the PowerShell module built from this script by Build-Module.ps1 can expose it)
+# =====================================================================================
+function Invoke-BookmarkBackupTool {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [switch]$Silent,
+        [ValidateSet('Export','Import')][string]$Action,
+        [switch]$Chrome,
+        [switch]$Edge,
+        [switch]$Firefox,
+        [ValidateScript({ if ($_ -and !(Test-Path $_ -IsValid)) { throw "Invalid path format: $_" }; $true })][string]$TargetPath,
+        [switch]$HtmlOnly,
+        [switch]$AllProfiles,
+        [switch]$CreateZip,
+        [switch]$Force,
+        [switch]$CreateScheduledTask,
+        [ValidateSet('Daily','Weekly','Monthly')][string]$ScheduleFrequency = 'Daily',
+        [string]$ConfigPath
+    )
+
+    # A new run: forget any share-detection result cached by a previous call in the same session (module use)
+    $script:HomeSharePathCache = $null
+    if ($ConfigPath) { $script:Config = Get-Configuration -ConfigFilePath $ConfigPath }
+
     Invoke-LogRetention
     Write-Log "=== Bookmark Backup Tool v$script:ToolVersion Enhanced Edition Started ==="
     Write-Log "PowerShell Version: $($PSVersionTable.PSVersion)"
     $execMode = 'GUI'
-if ($CreateScheduledTask) { $execMode = 'Scheduled Task Creation' }
-elseif ($Silent) { $execMode = 'Silent' }
-Write-Log ("Execution mode: {0}" -f $execMode)
+    if ($CreateScheduledTask) { $execMode = 'Scheduled Task Creation' }
+    elseif ($Silent) { $execMode = 'Silent' }
+    Write-Log ("Execution mode: {0}" -f $execMode)
     try {
         Write-Verbose 'Checking system prerequisites...'
         if (-not (Test-Prerequisites -TargetPath $TargetPath)) { throw 'Prerequisites check failed.' }
 
         # STA relaunch only for GUI mode
         if (-not $Silent -and [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
-            Write-Verbose 'Re-launching in STA mode for Windows Forms...'
-            $argsJoined = ($MyInvocation.UnboundArguments + $PSBoundParameters.GetEnumerator() | ForEach-Object {
-                if ($_.GetType().Name -eq 'DictionaryEntry') {
-                    if ($_.Value -is [switch] -and $_.Value.IsPresent) { "-$( $_.Key )" }
-                    elseif ($_.Value -is [string]) { "-$( $_.Key ) `"$( $_.Value )`"" }
-                    else { "-$( $_.Key ) $( $_.Value )" }
-                } else { $_ }
-            }) -join ' '
-            Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList "-STA -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $argsJoined" | Out-Null
-            $global:LASTEXITCODE = 0; exit 0
+            if ($script:IsModule) {
+                Write-Warning 'The GUI needs an STA thread. If it fails, restart PowerShell with -STA (Windows PowerShell 5.1 is STA by default).'
+            } else {
+                Write-Verbose 'Re-launching in STA mode for Windows Forms...'
+                $argsJoined = ($PSBoundParameters.GetEnumerator() | ForEach-Object {
+                    if ($_.Value -is [switch]) { if ($_.Value.IsPresent) { "-$($_.Key)" } }
+                    elseif ($_.Value -is [string]) { "-$($_.Key) `"$($_.Value)`"" }
+                    else { "-$($_.Key) $($_.Value)" }
+                }) -join ' '
+                Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList "-STA -NoProfile -ExecutionPolicy Bypass -File `"$script:ScriptPath`" $argsJoined" | Out-Null
+                return
+            }
         }
 
         if ($CreateScheduledTask) {
             Write-Log 'Creating scheduled task for automatic backups'
-            if (New-BookmarkScheduledTask -Frequency $ScheduleFrequency) { Write-Log 'Scheduled task creation completed successfully'; $global:LASTEXITCODE = 0; exit 0 } else { throw 'Scheduled task creation failed.' }
+            if (New-BookmarkScheduledTask -Frequency $ScheduleFrequency) { Write-Log 'Scheduled task creation completed successfully'; return } else { throw 'Scheduled task creation failed.' }
         }
 
         $finalPath = if ($TargetPath) {
@@ -1447,30 +1550,34 @@ Write-Log ("Execution mode: {0}" -f $execMode)
             switch ($Action) {
                 'Export' {
                     Write-Log "Silent export: Chrome=$Chrome Edge=$Edge Firefox=$Firefox HtmlOnly=$HtmlOnly; Path=$finalPath"
-                    if ($PSCmdlet.ShouldProcess($finalPath,'Export bookmarks')) { Export-Bookmarks -Path $finalPath -Chrome:$Chrome -Edge:$Edge -Firefox:$Firefox -ExportHtmlOnly:$HtmlOnly }
+                    if ($PSCmdlet.ShouldProcess($finalPath,'Export bookmarks')) { Export-Bookmarks -Path $finalPath -Chrome:$Chrome -Edge:$Edge -Firefox:$Firefox -ExportHtmlOnly:$HtmlOnly -AllProfiles:$AllProfiles -CreateZip:$CreateZip }
                     $summary = New-OperationSummary -Operations $script:OperationResults -StartTime $operationStart -OperationType 'Export'
                     Write-Log $summary
                 }
                 'Import' {
                     Write-Log "Silent import: Chrome=$Chrome Edge=$Edge Firefox=$Firefox; Path=$finalPath"
-                    if ($PSCmdlet.ShouldProcess($finalPath,'Import bookmarks')) { Import-Bookmarks -Path $finalPath -Chrome:$Chrome -Edge:$Edge -Firefox:$Firefox }
+                    if ($PSCmdlet.ShouldProcess($finalPath,'Import bookmarks')) { Import-Bookmarks -Path $finalPath -Chrome:$Chrome -Edge:$Edge -Firefox:$Firefox -AllProfiles:$AllProfiles -CloseBrowserIfRunning:$Force }
                     $summary = New-OperationSummary -Operations $script:OperationResults -StartTime $operationStart -OperationType 'Import'
                     Write-Log $summary
                 }
                 default { throw "When using -Silent, -Action must be 'Export' or 'Import'." }
             }
             Write-Log '=== Silent mode execution completed successfully ==='
-            $global:LASTEXITCODE = 0; exit 0
         } else {
             Write-Log 'Launching enhanced GUI mode'
             Show-GUI
             Write-Log '=== GUI mode execution completed successfully ==='
-            $global:LASTEXITCODE = 0; exit 0
         }
     }
     catch {
         Write-Log "ERROR: $($_.Exception.Message)" 'ERROR'
-        $global:LASTEXITCODE = 1
-        exit 1
+        throw
     }
 }
+
+# >>> SCRIPT ENTRY POINT - removed by Build-Module.ps1 when building the module
+if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.\s') {
+    try { Invoke-BookmarkBackupTool @PSBoundParameters; $global:LASTEXITCODE = 0; exit 0 }
+    catch { $global:LASTEXITCODE = 1; exit 1 }
+}
+# <<< SCRIPT ENTRY POINT
