@@ -7,6 +7,7 @@ It's designed to be **robust in enterprise environments** (network paths, permis
 
 **I built both Windows and macOS applications based on this script. These apps allow users to manage their own bookmarks, and both versions include command-line options for administrators.**
 
+- 📦 **PowerShell Gallery**: [https://www.powershellgallery.com/packages/BookmarkBackupTool](https://www.powershellgallery.com/packages/BookmarkBackupTool) [![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/BookmarkBackupTool)](https://www.powershellgallery.com/packages/BookmarkBackupTool) - install with `Install-Module BookmarkBackupTool -Scope CurrentUser`
 - 💻 **MacOS**: [https://github.com/hov172/MacOS-Bookmarks-Backup-Tool](https://github.com/hov172/MacOS-Bookmarks-Backup-Tool)  
 - 🖥️ **Windows**: [https://github.com/hov172/Win-Bookmarks-Backup-Tool/tree/main](https://github.com/hov172/Win-Bookmarks-Backup-Tool/tree/main)
 
